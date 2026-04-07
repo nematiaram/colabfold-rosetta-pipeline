@@ -1,14 +1,4 @@
 #!/usr/bin/env python3
-"""
-Self-contained Step 4 pipeline for CL-MS decision design (revised).
-
-Changes from prior version:
-- top-table PNG colors only the 'diff' column, not rep1/rep2/rep3
-- fills `labels` and `label_non_specific` automatically from built-in reagent rules
-  unless an explicit --labels-source file is provided
-- keeps the same residue-ranking logic and decision-tree logic
-"""
-
 from __future__ import annotations
 
 import argparse
