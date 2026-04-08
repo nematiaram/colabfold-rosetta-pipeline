@@ -13,6 +13,15 @@ The Rosetta binary is **not** included in the container. Please mount it at runt
 
 ## Build the Docker image
 
+First clone the repository and move into it:
+
+```bash
+git clone https://github.com/nematiaram/colabfold-rosetta-pipeline.git
+cd colabfold-rosetta-pipeline
+```
+
+Then build the Docker image.
+
 The base image tag must exist in GHCR. If a build fails, use a valid tag from:
 https://github.com/sokrypton/ColabFold/pkgs/container/colabfold
 
