@@ -17,4 +17,4 @@ ENV PYTHONPATH=/opt/pipeline/pipeline_steps
 
 RUN chmod +x /opt/pipeline/run_pipeline.sh
 
-CMD ["bash"]
+ENTRYPOINT ["/opt/pipeline/run_pipeline.sh"]
