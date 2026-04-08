@@ -29,12 +29,12 @@ docker build \
 
 ## Run the pipeline
 
-### Option A: run everything (including ColabFold)
-
 ```bash
 Run the pipeline
 
-docker run --rm -it all \
+Run the pipeline
+
+docker run --rm -it --gpus all \
   -v /path/to/data:/data \
   -v /path/to/rosetta/bin/per_residue_solvent_exposure.linuxgccrelease:/opt/rosetta/per_residue_solvent_exposure.linuxgccrelease:ro \
   -e UNIPROT=Q9X6R4 \
