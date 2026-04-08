@@ -32,11 +32,16 @@ docker build \
 ### Option A: run everything (including ColabFold)
 
 ```bash
-docker run --rm -it --gpus all \
+Run the pipeline
+
+docker run --rm -it all \
   -v /path/to/data:/data \
   -v /path/to/rosetta/bin/per_residue_solvent_exposure.linuxgccrelease:/opt/rosetta/per_residue_solvent_exposure.linuxgccrelease:ro \
+  -e UNIPROT=Q9X6R4 \
+  -e FASTA=/data/input.fasta \
+  -e ROSETTA_BIN=/opt/rosetta/per_residue_solvent_exposure.linuxgccrelease \
   colabfold-rosetta-pipeline \
-  bash -lc 'UNIPROT=Q9X6R4 FASTA=/data/input.fasta OUT_DIR=/data/output ROSETTA_BIN=/opt/rosetta/per_residue_solvent_exposure.linuxgccrelease /opt/pipeline/run_pipeline.sh'
+  /data/output
 ```
 
 If you do not have a GPU, remove `--gpus all` and expect ColabFold to run much
@@ -48,14 +53,6 @@ Default ColabFold target is 1500 models. Override with:
 COLABFOLD_NUM_MODELS=2000
 ```
 
-### Option B: skip ColabFold if you already have PDBs
-
-```bash
-docker run --rm -it \
-  -v /path/to/data:/data \
-  -v /path/to/rosetta/bin/per_residue_solvent_exposure.linuxgccrelease:/opt/rosetta/per_residue_solvent_exposure.linuxgccrelease:ro \
-  colabfold-rosetta-pipeline \
-  bash -lc 'UNIPROT=Q9X6R4 PRED_DIR=/data/pdbs OUT_DIR=/data/output ROSETTA_BIN=/opt/rosetta/per_residue_solvent_exposure.linuxgccrelease /opt/pipeline/run_pipeline.sh'
 ```
 
 ## Label mapping inputs
