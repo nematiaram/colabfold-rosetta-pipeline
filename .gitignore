@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.pyc
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+.env
+*.log
+.DS_Store
+
+*.abs_full
+*.bak_outlier
