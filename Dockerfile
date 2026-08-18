@@ -36,9 +36,11 @@ ENV ROSETTA_BIN=/opt/rosetta-bin
 
 COPY pipeline_steps /opt/pipeline/pipeline_steps
 COPY entrypoint.sh /opt/pipeline/entrypoint.sh
+COPY run_pipeline.sh /opt/pipeline/run_pipeline.sh
+COPY run_from_predictions.sh /opt/pipeline/run_from_predictions.sh
 
 ENV PYTHONPATH=/opt/pipeline/pipeline_steps
 
-RUN chmod +x /opt/pipeline/entrypoint.sh
+RUN chmod +x /opt/pipeline/entrypoint.sh /opt/pipeline/run_pipeline.sh /opt/pipeline/run_from_predictions.sh
 
 ENTRYPOINT ["/opt/pipeline/entrypoint.sh"]
