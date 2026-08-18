@@ -1,53 +1,48 @@
-# ColabFold + Rosetta NC Pipeline Container
+# ColabFold + Rosetta cone NC + pairwise ΔNC pipeline
 
-This repository contains a Docker-based pipeline that runs:
+Docker-based workflow from FASTA to covalent-labeling reporter recommendations.
 
-1. ColabFold batch prediction
-2. pLDDT/RMSD clustering
-3. Rosetta neighbor count (NC)
-4. Labeling/decision outputs
+This repository implements the **pairwise neighbor-count (NC) approach** used in the
+11-protein benchmark: Rosetta **cone** solvent exposure on three cluster
+representatives, pairwise |ΔNC| ranking, and residue→reagent mapping (Table S2).
 
-The pipeline starts from a **FASTA file** and runs the full workflow from structure prediction to final ranking outputs.
+## Pipeline steps
 
-The Rosetta binary is **not** included in the container. Please mount it at runtime and pass its path through `ROSETTA_BIN`.
+| Step | Script | Output |
+|------|--------|--------|
+| 1 | `01_run_colabfold_batch.py` | `colabfold/*.pdb` |
+| 2 | `02_plddt_rmsd_kmeans.py` | `analysis/{UID}_rep_info.tsv` (3 reps) |
+| 3 | `03_run_rosetta_nc.py` | `rosetta/{UID}_rosetta_nc.tsv` (**cone** NC by default) |
+| 5 | `05_pairwise_delta_nc.py` | `pairwise/` — ΔNC tables, reagent targets, best-per-pair picks |
+
+Step 4 (`04_labeling_decision_pipeline_all_in_one.py`) is the **legacy**
+absolute exposed/buried gate workflow. Set `RUN_LEGACY_DECISION=1` to run it
+in addition to step 5.
+
+## Key concepts
+
+- **Cone NC**: Rosetta `per_residue_solvent_exposure` with
+  `-solvent_exposure:method cone`. Directional neighbor count (side-chain oriented),
+  distinct from the default soft **sphere** method.
+- **Pairwise ΔNC**: For each residue, `d12 = |NC_rep1 − NC_rep2|`, etc. A residue
+  is a **reporter** when max(d12, d13, d23) ≥ T (default **T = 5**).
+- **Reagent mapping**: `reagent_map.py` assigns residue-selective reagents
+  (DEPC, EDC/GEE, arginine dicarbonyls, …) and broadly reactive bins
+  (OH-high/medium/low, diazirine, CF3). See Table S2 in the paper.
+
+Lower NC ≈ more solvent-exposed ≈ more labeled in the more-exposed conformer.
 
 ## Build the Docker image
-
-First clone the repository and move into it:
 
 ```bash
 git clone https://github.com/nematiaram/colabfold-rosetta-pipeline.git
 cd colabfold-rosetta-pipeline
-```
-
-Then build the Docker image.
-
-The base image tag must exist in GHCR. If a build fails, use a valid tag from:
-https://github.com/sokrypton/ColabFold/pkgs/container/colabfold
-
-```bash
 docker build -t colabfold-rosetta-pipeline .
 ```
 
-Override the base image tag if needed:
+Rosetta is **not** bundled. Mount the binary at runtime via `ROSETTA_BIN`.
 
-```bash
-docker build \
-  --build-arg COLABFOLD_IMAGE=ghcr.io/sokrypton/colabfold:1.5.3-cuda12.2.2 \
-  -t colabfold-rosetta-pipeline .
-```
-
-## Run the pipeline
-
-The container expects these environment variables:
-
-- `UNIPROT`
-- `FASTA`
-- `ROSETTA_BIN`
-
-The final argument to the container is the **working directory**, and all outputs will be written there.
-
-Example:
+## Run (simple mode)
 
 ```bash
 docker run --rm -it --gpus all \
@@ -56,57 +51,64 @@ docker run --rm -it --gpus all \
   -e UNIPROT=Q9X6R4 \
   -e FASTA=/data/input.fasta \
   -e ROSETTA_BIN=/opt/rosetta/per_residue_solvent_exposure.linuxgccrelease \
+  -e NC_METHOD=cone \
+  -e PAIRWISE_THRESHOLD=5 \
   colabfold-rosetta-pipeline \
   /data/output
 ```
 
-In this example, all pipeline outputs will be written under:
+## Run from existing predictions (no ColabFold)
+
+If you already have PDBs under `colabfold/`:
 
 ```bash
-/data/output
-```
-
-If you do not have a GPU, remove `--gpus all`. ColabFold may run much slower depending on your setup.
-
-The default ColabFold target is 1500 models. To override it, use for example:
-
-```bash
-docker run --rm -it --gpus all \
-  -v /path/to/data:/data \
-  -v /path/to/rosetta/bin/per_residue_solvent_exposure.linuxgccrelease:/opt/rosetta/per_residue_solvent_exposure.linuxgccrelease:ro \
-  -e UNIPROT=Q9X6R4 \
-  -e FASTA=/data/input.fasta \
-  -e ROSETTA_BIN=/opt/rosetta/per_residue_solvent_exposure.linuxgccrelease \
-  -e COLABFOLD_NUM_MODELS=2000 \
-  colabfold-rosetta-pipeline \
-  /data/output
+UNIPROT=A0A075Q0W3 \
+ROSETTA_BIN=/path/to/per_residue_solvent_exposure \
+SKIP_COLABFOLD=1 \
+./run_pipeline.sh /data/output
 ```
 
 ## Output structure
 
-The pipeline writes results inside the working directory you provide, including:
-
-- `colabfold/`
-- `analysis/`
-- `rosetta/`
-- `decision/`
-
-## Label mapping inputs
-
-The decision step can optionally use label mapping inputs:
-
-- `LABELS_SOURCE`: TSV mapping `resname -> labels/label_non_specific`
-- `LABELS_DIR`: directory to scan for `*_top10_all_reps.tsv`
-
-## Using Apptainer
-
-If your cluster lacks `mksquashfs`, you may not be able to build a `.sif` locally from a sandbox. Two practical options are:
-
-1. Build the `.sif` on another machine with `mksquashfs`, then copy it over:
-
-```bash
-docker build -t colabfold-rosetta-pipeline .
-apptainer build colabfold-rosetta-pipeline.sif docker-daemon://colabfold-rosetta-pipeline:latest
+```
+output/
+  colabfold/          # ColabFold PDBs
+  analysis/           # rep_info.tsv, clustering plots
+  rosetta/            # *_rosetta_nc.tsv, raw *.out per rep
+  pairwise/           # main results
+    {UID}_all_residues_with_pair_diffs.tsv
+    {UID}_residues_dNC_ge_5.tsv
+    {UID}_reagent_residue_detail.tsv
+    {UID}_reagent_target_counts.tsv
+    {UID}_best_per_pair.tsv
+  decision/           # only if RUN_LEGACY_DECISION=1
 ```
 
-2. If your cluster supports pulling from Docker registries, build the `.sif` there once `mksquashfs` is available in `PATH`.
+## Environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NC_METHOD` | `cone` | Rosetta NC method (`cone` or `sphere`) |
+| `PAIRWISE_THRESHOLD` | `5` | Minimum \|ΔNC\| for a reporter |
+| `RUN_LEGACY_DECISION` | `0` | Run legacy step 04 absolute-gate decision |
+| `SKIP_COLABFOLD` | `0` | Skip step 01 if PDBs exist |
+| `SKIP_CLUSTERING` | `0` | Skip step 02 if rep_info exists |
+| `COLABFOLD_NUM_MODELS` | `1500` | Target ColabFold model count |
+
+## Cluster entrypoint
+
+For multi-worker ColabFold fan-out on shared clusters, use `entrypoint.sh`
+(JSON job input, `--ncpus`). It runs the same steps 2–5 after ColabFold completes.
+
+## Reagent map
+
+Edit `pipeline_steps/reagent_map.py` to change residue→reagent assignments.
+Residue-selective sets follow published specificities; OH bins and all-20
+diazirine/CF3 mappings are operational pipeline assumptions (see file docstring).
+
+## Requirements
+
+- Python 3.9+
+- numpy, pandas, matplotlib (`requirements.txt`)
+- Rosetta 3.x `per_residue_solvent_exposure` binary
+- ColabFold (for step 1 only)

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""Run Rosetta per-residue solvent exposure (sphere or cone neighbor count)."""
 import argparse
 import os
 import re
@@ -6,7 +7,6 @@ import subprocess
 from pathlib import Path
 
 import pandas as pd
-
 
 ROSETTA_BIN_DEFAULT = os.environ.get(
     "ROSETTA_BIN",
@@ -57,11 +57,9 @@ def _parse_chain_from_tokens(toks, default_chain: str) -> str:
         m = re.match(r"(?i)^chain[:=]([A-Za-z0-9])$", t)
         if m:
             return m.group(1)
-
     for i, t in enumerate(toks[:-1]):
         if t.lower() == "chain" and len(toks[i + 1]) == 1:
             return toks[i + 1]
-
     if len(toks) >= 4:
         if len(toks[0]) == 1 and toks[0].upper() in AA1_TO3:
             try:
@@ -70,7 +68,6 @@ def _parse_chain_from_tokens(toks, default_chain: str) -> str:
                     return toks[2]
             except ValueError:
                 pass
-
     return default_chain
 
 
@@ -83,26 +80,20 @@ def parse_nc_file(path: str, col_label: str, default_chain: str = "A") -> pd.Dat
                 continue
             if line.lower().startswith("residue"):
                 continue
-
             toks = line.split()
             if len(toks) < 2:
                 continue
-
             resnum = _first_int_token(toks)
             nc_val = _last_float_token(toks)
             if resnum is None or nc_val is None:
                 continue
-
             resname = _parse_resname_from_tokens(toks)
             chain = _parse_chain_from_tokens(toks, default_chain=default_chain)
             rows.append({"chain": chain, "resnum": resnum, "resname": resname, col_label: nc_val})
-
     if not rows:
         raise RuntimeError(f"No NC rows parsed from {path}")
-
     df = pd.DataFrame(rows)
-    df = df.groupby(["chain", "resnum", "resname"], as_index=False).agg({col_label: "mean"})
-    return df
+    return df.groupby(["chain", "resnum", "resname"], as_index=False).agg({col_label: "mean"})
 
 
 def read_nc_table(path, col_label, default_chain: str = "A"):
@@ -120,36 +111,31 @@ def read_nc_table(path, col_label, default_chain: str = "A"):
             return out[["chain", "resnum", "resname", col_label]]
     except Exception:
         pass
-
     return parse_nc_file(path, col_label, default_chain=default_chain)
 
 
-def merge_nc(uid, out_dir, default_chain: str = "A"):
-    out_dir = Path(out_dir)
-    f1 = out_dir / f"{uid}_rep_cluster1_neighbor_count_sphere.out"
-    f2 = out_dir / f"{uid}_rep_cluster2_neighbor_count_sphere.out"
-    f3 = out_dir / f"{uid}_rep_cluster3_neighbor_count_sphere.out"
-    for fp in [f1, f2, f3]:
+def merge_nc(uid: str, out_dir: Path, method: str, default_chain: str = "A") -> Path:
+    files = [
+        out_dir / f"{uid}_rep_cluster{i}_neighbor_count_{method}.out"
+        for i in (1, 2, 3)
+    ]
+    for fp in files:
         if not fp.is_file():
-            raise FileNotFoundError("Missing NC file: %s" % fp)
+            raise FileNotFoundError(f"Missing NC file: {fp}")
 
-    df1 = read_nc_table(f1, "nc_rep1", default_chain=default_chain)
-    df2 = read_nc_table(f2, "nc_rep2", default_chain=default_chain)
-    df3 = read_nc_table(f3, "nc_rep3", default_chain=default_chain)
+    df1 = read_nc_table(files[0], "nc_rep1", default_chain=default_chain)
+    df2 = read_nc_table(files[1], "nc_rep2", default_chain=default_chain)
+    df3 = read_nc_table(files[2], "nc_rep3", default_chain=default_chain)
 
     merged = df1.merge(df2, on=["chain", "resnum"], how="inner", suffixes=("", "_b"))
     merged = merged.merge(df3, on=["chain", "resnum"], how="inner", suffixes=("", "_c"))
-
-    if "resname_b" in merged.columns:
-        merged["resname"] = merged["resname"].where(
-            merged["resname"].ne("UNK"), merged["resname_b"].fillna(merged["resname"])
-        )
-        merged = merged.drop(columns=["resname_b"])
-    if "resname_c" in merged.columns:
-        merged["resname"] = merged["resname"].where(
-            merged["resname"].ne("UNK"), merged["resname_c"].fillna(merged["resname"])
-        )
-        merged = merged.drop(columns=["resname_c"])
+    for suffix in ("_b", "_c"):
+        col = f"resname{suffix}"
+        if col in merged.columns:
+            merged["resname"] = merged["resname"].where(
+                merged["resname"].ne("UNK"), merged[col].fillna(merged["resname"])
+            )
+            merged = merged.drop(columns=[col])
 
     merged = merged[["chain", "resnum", "resname", "nc_rep1", "nc_rep2", "nc_rep3"]]
     merged = merged.sort_values(["chain", "resnum"]).reset_index(drop=True)
@@ -167,6 +153,10 @@ def main():
                     help="TSV with rep_id and pdb_path (from script 02).")
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--rosetta-bin", default=ROSETTA_BIN_DEFAULT)
+    ap.add_argument("--method", choices=["sphere", "cone"], default="cone",
+                    help="Rosetta solvent_exposure method (default: cone).")
+    ap.add_argument("--dist-midpoint", type=float, default=9.0)
+    ap.add_argument("--dist-steepness", type=float, default=1.0)
     ap.add_argument("--default-chain", default="A",
                     help="Default chain ID when NC output lacks chain.")
     args = ap.parse_args()
@@ -191,23 +181,25 @@ def main():
                 continue
             rows.append((parts[idx_rep], parts[idx_pdb]))
 
+    db = os.environ.get("ROSETTA3_DB") or os.environ.get("ROSETTA_DATABASE")
     for rep_id, pdb_path in rows:
         base = f"{args.uniprot}_{rep_id}"
-        out_path = out_dir / f"{base}_neighbor_count_sphere.out"
+        out_path = out_dir / f"{base}_neighbor_count_{args.method}.out"
         cmd = [
             args.rosetta_bin,
             "-in:file:s", str(pdb_path),
-            "-solvent_exposure:method", "sphere",
-            "-dist_midpoint", "9.0",
-            "-dist_steepness", "1.0",
+            "-solvent_exposure:method", args.method,
+            "-dist_midpoint", str(args.dist_midpoint),
+            "-dist_steepness", str(args.dist_steepness),
             "-out:file:o", str(out_path),
         ]
+        if db:
+            cmd[1:1] = ["-database", db]
         print("[RUN] " + " ".join(cmd))
         subprocess.run(cmd, check=True)
 
-    nc_path = merge_nc(args.uniprot, out_dir, default_chain=args.default_chain)
-    print(f"[DONE] NC outputs written to {out_dir}")
-    print(f"[DONE] Merged NC table: {nc_path}")
+    nc_path = merge_nc(args.uniprot, out_dir, args.method, default_chain=args.default_chain)
+    print(f"[DONE] method={args.method}  merged={nc_path}")
 
 
 if __name__ == "__main__":
