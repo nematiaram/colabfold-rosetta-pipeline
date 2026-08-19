@@ -5,7 +5,8 @@ from pathlib import Path
 
 def main():
     ap = argparse.ArgumentParser(description="Run ColabFold batch to generate structures.")
-    ap.add_argument("--fasta", required=True, help="Input FASTA file.")
+    ap.add_argument("--fasta", required=True,
+                     help="Input FASTA, or a precomputed .a3m so workers skip the MSA step.")
     ap.add_argument("--out-dir", required=True, help="Output directory.")
     ap.add_argument("--colabfold-bin", default="colabfold_batch",
                      help="ColabFold batch executable (default: colabfold_batch).")
