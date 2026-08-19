@@ -114,6 +114,10 @@ echo "UNIPROT=${UNIPROT} NUM_SEEDS=${NUM_SEEDS} MODELS_PER_SEED=${MODELS_PER_SEE
 echo "SEED_SPLIT BASE=${BASE_SEEDS} REMAINDER=${REMAINDER} (first ${REMAINDER} workers get BASE+1)"
 echo "ALLOWED_CPUS=${ALLOWED_CPUS[*]}"
 
+# Ignore ~/.local site-packages. Container runtimes bind $HOME by default, and
+# a newer Biopython there shadows the image's, breaking AlphaFold's
+# `from Bio.Data import SCOPData` before colabfold_batch can start.
+export PYTHONNOUSERSITE=1
 export JAX_PLATFORMS=cpu
 export CUDA_VISIBLE_DEVICES=""
 export OMP_NUM_THREADS="$THREADS_PER_WORKER"
@@ -139,7 +143,10 @@ else
   "$COLABFOLD_BIN" --num-seeds 1 --num-models 1 "$FASTA" "$MSA_DIR" >> "${MSA_DIR}/msa.log" 2>&1 || true
  fi
 fi
-A3M="$(ls -1 "${MSA_DIR}"/*.a3m 2>/dev/null | head -n1)"
+A3M=""
+for candidate in "${MSA_DIR}"/*.a3m; do
+ if [[ -f "$candidate" ]]; then A3M="$candidate"; break; fi
+done
 if [[ -n "$A3M" ]]; then
  WORKER_INPUT="$A3M"
  echo "[MSA] workers reuse ${A3M} (0 per-worker MSA queries)"
