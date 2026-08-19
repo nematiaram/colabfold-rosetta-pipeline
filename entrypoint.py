@@ -141,6 +141,35 @@ def build_shared_msa(colabfold_bin, fasta, msa_dir, env=None):
     return None
 
 
+def prime_weights_cache(colabfold_bin, worker_input, work_dir, env):
+    """Prime the AlphaFold weights cache with one sequential single-model run.
+
+    Unlike the MSA, model-weight loading is per-process: each worker's
+    colabfold_batch independently reads/downloads the weights into the shared
+    on-disk cache. On a cold cache, concurrent workers race on that file and a
+    loser can read a partially-written copy (zipfile.BadZipFile), failing that
+    worker's seed. This forces the cache to be fully populated first.
+    """
+    prime_dir = work_dir / ".weights_prime"
+    prime_dir.mkdir(parents=True, exist_ok=True)
+    print("[WEIGHTS] priming model cache sequentially (avoids parallel-download race)",
+          flush=True)
+    log_path = prime_dir / "prime.log"
+    with open(log_path, "wb") as lf:
+        rc = subprocess.run([colabfold_bin, "--num-seeds", "1", "--num-models", "1",
+                             str(worker_input), str(prime_dir)],
+                            stdout=lf, stderr=subprocess.STDOUT, env=env).returncode
+    if rc != 0:
+        print("WARNING: weights priming failed; workers may still race on a cold cache.",
+              file=sys.stderr)
+        try:
+            tail = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-15:]
+            for line in tail:
+                print("  " + line, file=sys.stderr)
+        except OSError:
+            pass
+
+
 def split_seeds(num_seeds, num_workers):
     """Exact split: the first `remainder` workers take one extra seed.
 
@@ -181,6 +210,10 @@ def run_colabfold(work_dir, pred_dir, fasta, uniprot, num_seeds, models_per_seed
     print("ALLOWED_CPUS=%s" % " ".join(map(str, allowed)), flush=True)
     print("SEED_SPLIT %s" % " ".join("w%d=%d" % (i, n) for i, n in enumerate(per_worker)),
           flush=True)
+    print("NOTE: %d workers each hold their own copy of the AlphaFold weights (not shared)."
+          % num_workers, flush=True)
+    print("      Budget --mem well above --ncpus alone would suggest; "
+          "~4GB/worker was the observed floor.", flush=True)
 
     env = os.environ.copy()
     env.update({
@@ -203,6 +236,9 @@ def run_colabfold(work_dir, pred_dir, fasta, uniprot, num_seeds, models_per_seed
 
     msa_a3m = build_shared_msa(colabfold_bin, fasta, work_dir / "msa", env=env)
     worker_input = msa_a3m if msa_a3m is not None else fasta
+
+    if num_workers > 1:
+        prime_weights_cache(colabfold_bin, worker_input, work_dir, env)
 
     processes = []
     start_seed = 0
