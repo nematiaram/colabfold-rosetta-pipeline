@@ -26,7 +26,9 @@ flowchart LR
 
 Default **T = 5**. Pair 1–2, 1–3, and 2–3 are kept separate.
 
-ROSIE / cluster jobs use `job.json` and `entrypoint.sh` (`--workdir`, `--input`, `--ncpus`).
+ROSIE / cluster jobs use `job.json` and `entrypoint.py` (`--workdir`, `--input`, `--ncpus`).
+`entrypoint.sh` remains as a shim that execs `entrypoint.py`, so existing
+invocations keep working.
 
 ---
 
@@ -53,8 +55,10 @@ The three required command-line arguments are:
 | `--input` | Path to the `job.json` file describing the protein and ColabFold job. |
 | `--ncpus` | Number of CPU cores available to the container. |
 
-The Docker image uses `entrypoint.sh` as its entrypoint, so these arguments are
-passed directly to the pipeline.
+The Docker image uses `entrypoint.py` as its entrypoint, so these arguments are
+passed directly to the pipeline. Console output is ASCII-only: cluster jobs
+often run under `LANG=C`, where printing a non-ASCII character raises
+`UnicodeEncodeError` and kills the run. Report files are written as UTF-8.
 
 ---
 
