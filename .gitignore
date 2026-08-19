@@ -2,3 +2,10 @@
 # large release files
 *.tgz
 *.tar.gz
+
+__pycache__/
+*.py[cod]
+*.abs_full
+*.bak_outlier
+.DS_Store
+
