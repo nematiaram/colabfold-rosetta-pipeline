@@ -90,8 +90,19 @@ if [[ "$THREADS_PER_WORKER" -gt "$NCPUS" ]]; then
  THREADS_PER_WORKER=$NCPUS
 fi
 
+# Only pin when the cpuset actually reflects this job's allocation. Some
+# schedulers (UGE on shared nodes, for one) hand out N slots but leave affinity
+# open across the whole machine. Pinning to the first N cores there makes every
+# concurrent job on the node pile onto the same low-numbered cores while the
+# rest idle, which is worse than not pinning at all.
 HAVE_TASKSET=1
 command -v taskset >/dev/null 2>&1 || { HAVE_TASKSET=0; echo "WARNING: taskset not found; workers will not be pinned." >&2; }
+if [[ "$HAVE_TASKSET" -eq 1 && "$N_ALLOWED" -gt "$NCPUS" ]]; then
+ HAVE_TASKSET=0
+ echo "NOTE: affinity is open across ${N_ALLOWED} CPUs but only ${NCPUS} were requested;" >&2
+ echo "      the cpuset does not describe this allocation, so workers run unpinned" >&2
+ echo "      to avoid colliding with other jobs on a shared node." >&2
+fi
 
 NUM_WORKERS=$(( NCPUS / THREADS_PER_WORKER ))
 if [[ "$NUM_WORKERS" -lt 1 ]]; then NUM_WORKERS=1; fi
