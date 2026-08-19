@@ -10,7 +10,7 @@ def main():
     ap.add_argument("--out-meta", required=True)
     args = ap.parse_args()
 
-    with open(args.input_json) as f:
+    with open(args.input_json, encoding="utf-8") as f:
         job = json.load(f)
 
     for required in ("job_id", "sequence", "num_seeds", "models_per_seed"):
@@ -24,9 +24,9 @@ def main():
     labels_source = job.get("labels_source", "")
     labels_dir = job.get("labels_dir", "")
 
-    Path(args.out_fasta).write_text(f">{uniprot}\n{sequence}\n")
+    Path(args.out_fasta).write_text(f">{uniprot}\n{sequence}\n", encoding="utf-8")
 
-    with open(args.out_meta, "w") as f:
+    with open(args.out_meta, "w", encoding="utf-8") as f:
         f.write(f"UNIPROT={uniprot}\n")
         f.write(f"NUM_SEEDS={num_seeds}\n")
         f.write(f"MODELS_PER_SEED={models_per_seed}\n")
