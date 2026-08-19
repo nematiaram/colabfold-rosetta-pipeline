@@ -262,28 +262,37 @@ ColabFold.
 The cluster entrypoint distributes ColabFold calculations across multiple CPU
 workers.
 
-The default is one CPU thread per ColabFold process:
-
 ```text
-THREADS_PER_WORKER=1
 NUM_WORKERS = NCPUS / THREADS_PER_WORKER
 ```
 
-AlphaFold/JAX on CPU does not scale with 8 OpenMP threads. Pinning each
-worker to 8 cores therefore leaves most of `--ncpus` idle (~12 cores busy
-on a 32-core job). Independent seeds do parallelize, so the default is
-many 1-thread workers:
+The image default is still `THREADS_PER_WORKER=8` (4 workers on 32 CPUs).
+JAX/AlphaFold on CPU does not use those 8 threads well, so a 32-core job
+typically sits near ~12 cores. Do not treat CPU percent as the score;
+compare wall-clock time.
+
+Until a new default is chosen, pass the thread count explicitly:
 
 ```text
---ncpus 32
-THREADS_PER_WORKER=1
+# first test (16 workers on 32 CPUs)
+-e THREADS_PER_WORKER=2
 
-32 / 1 = 32 workers
+# if RAM is fine and CPU is still low (32 workers)
+-e THREADS_PER_WORKER=1
 ```
 
-For a job requesting 300 seeds, this is about 10 seeds per worker (then
-`models_per_seed` models each). If the node runs out of RAM, raise
-`THREADS_PER_WORKER` to 2 or 4 (fewer processes, more cores unused).
+Seeds are split exactly. No worker is given `ceil(NUM_SEEDS / NUM_WORKERS)`
+if that would overshoot. For 300 seeds and 32 workers:
+
+```text
+12 workers × 10 seeds
+20 workers × 9 seeds
+total = 300 seeds
+× models_per_seed 5 = 1500 models
+```
+
+Existing Docker images keep the old 8-thread default unless
+`THREADS_PER_WORKER` is set. Rebuild after merging to main.
 
 Each worker writes its results into:
 
@@ -809,7 +818,7 @@ The JSON/cluster entrypoint supports the following environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `THREADS_PER_WORKER` | 1 | CPU threads per ColabFold worker. Default 1 so `--ncpus` is filled with independent seed jobs. Raise to 2 or 4 if RAM is the limit. |
+| `THREADS_PER_WORKER` | 8 | CPU threads per ColabFold worker. Keep 8 until `2` then `1` are timed; pass `-e THREADS_PER_WORKER=2` (or `1`) for those tests. |
 | `ROSETTA_BIN` | image-provided path (`/opt/rosetta-bin` in the Dockerfile) | Path to Rosetta `per_residue_solvent_exposure`. |
 | `NC_METHOD` | `cone` | Rosetta neighbor-count method. May be `cone` or `sphere`. |
 | `PAIRWISE_THRESHOLD` | `5` | Minimum absolute pairwise ΔNC required for reporter designation. |
