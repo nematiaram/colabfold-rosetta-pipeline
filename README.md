@@ -1,48 +1,32 @@
 # ColabFold + Rosetta Cone-NC + Pairwise ΔNC Covalent-Labeling Pipeline
 
-This repository contains the computational pipeline used to generate alternative
-protein structures and identify residue-level covalent-labeling measurements that
-can help distinguish among them.
+Given a protein sequence, this pipeline builds three alternative structural
+models, scores every residue with Rosetta cone neighbor count (NC), and lists
+covalent-labeling sites whose NC differs enough between models to be useful
+experimentally.
 
-The workflow starts from a protein amino-acid sequence, generates structurally
-diverse candidate models with ColabFold, selects three representative structures,
-calculates residue-level neighbor counts (NCs) using Rosetta, compares the
-representatives pairwise, identifies structurally informative reporter residues,
-and maps those residues to compatible covalent-labeling reagents.
-
-The primary workflow is:
-
-```text
-Protein sequence
-      ↓
-ColabFold structure generation
-      ↓
-Candidate structures
-      ↓
-pLDDT / RMSD analysis
-      ↓
-k-means clustering (k = 3)
-      ↓
-Rep 1       Rep 2       Rep 3
-      \        |        /
-       Rosetta cone NC
-              ↓
-   NC for every residue
-              ↓
-Three pairwise comparisons
- Rep1–Rep2 | Rep1–Rep3 | Rep2–Rep3
-              ↓
-       Pairwise |ΔNC|
-              ↓
- Reporter residues above threshold
-              ↓
-Residue → compatible CL reagents
-              ↓
-Pair-specific reporter and reagent tables
+```mermaid
+flowchart LR
+  seq[Sequence] --> cf[ColabFold]
+  cf --> km["k-means, k = 3"]
+  km --> r1[Rep 1]
+  km --> r2[Rep 2]
+  km --> r3[Rep 3]
+  r1 --> nc[Cone NC]
+  r2 --> nc
+  r3 --> nc
+  nc --> d12["|ΔNC| 1–2"]
+  nc --> d13["|ΔNC| 1–3"]
+  nc --> d23["|ΔNC| 2–3"]
+  d12 --> rep["Reporters, |ΔNC| ≥ T"]
+  d13 --> rep
+  d23 --> rep
+  rep --> cl[Compatible reagents]
 ```
 
-The primary user-facing interface for ROSIE / shared-cluster execution is the
-JSON job file consumed by `entrypoint.sh`.
+Default **T = 5**. Pair 1–2, 1–3, and 2–3 are kept separate.
+
+ROSIE / cluster jobs use `job.json` and `entrypoint.sh` (`--workdir`, `--input`, `--ncpus`).
 
 ---
 
