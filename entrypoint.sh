@@ -13,7 +13,10 @@ Required:
   --ncpus     CPUs available to this container instance.
 
 Optional env:
-  THREADS_PER_WORKER      ColabFold worker threads (default: 8).
+  THREADS_PER_WORKER      ColabFold worker threads (default: 1).
+                          JAX/AlphaFold does not use 8 CPU threads well;
+                          1 thread per worker fills --ncpus with independent
+                          seed jobs. Raise this if RAM is tight.
   ROSETTA_BIN             per_residue_solvent_exposure binary.
   NC_METHOD               Rosetta NC method: cone or sphere (default: cone).
   PAIRWISE_THRESHOLD      Minimum |ΔNC| for reporters (default: 5).
@@ -39,7 +42,9 @@ fi
 
 ROSETTA_BIN="${ROSETTA_BIN:-/opt/conda/bin/per_residue_solvent_exposure.linuxgccrelease}"
 SCRIPTS_DIR="/opt/pipeline/pipeline_steps"
-THREADS_PER_WORKER="${THREADS_PER_WORKER:-8}"
+# One thread per ColabFold process. Extra OpenMP/XLA threads do not speed
+# AF2 on CPU and they cut the number of parallel seed workers.
+THREADS_PER_WORKER="${THREADS_PER_WORKER:-1}"
 NC_METHOD="${NC_METHOD:-cone}"
 PAIRWISE_THRESHOLD="${PAIRWISE_THRESHOLD:-5}"
 RUN_LEGACY_DECISION="${RUN_LEGACY_DECISION:-0}"
