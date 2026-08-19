@@ -95,7 +95,7 @@ def usable_cpus(ncpus):
     return allowed, ncpus, pin
 
 
-def build_shared_msa(colabfold_bin, fasta, msa_dir):
+def build_shared_msa(colabfold_bin, fasta, msa_dir, env=None):
     """Build the MSA once and return the .a3m, or None.
 
     Without this every worker runs colabfold_batch on the FASTA and queries the
@@ -113,8 +113,8 @@ def build_shared_msa(colabfold_bin, fasta, msa_dir):
     supports_msa_only = False
     try:
         help_text = subprocess.run([colabfold_bin, "--help"], stdout=subprocess.PIPE,
-                                   stderr=subprocess.STDOUT, timeout=300).stdout.decode(
-                                       "utf-8", "replace")
+                                   stderr=subprocess.STDOUT, timeout=300,
+                                   env=env).stdout.decode("utf-8", "replace")
         supports_msa_only = "--msa-only" in help_text
     except (OSError, subprocess.SubprocessError) as e:
         print("[MSA] could not query %s --help (%s)" % (colabfold_bin, e), file=sys.stderr)
@@ -123,12 +123,13 @@ def build_shared_msa(colabfold_bin, fasta, msa_dir):
         if supports_msa_only:
             print("[MSA] building shared MSA (--msa-only)", flush=True)
             subprocess.run([colabfold_bin, "--msa-only", str(fasta), str(msa_dir)],
-                           stdout=lf, stderr=subprocess.STDOUT)
+                           stdout=lf, stderr=subprocess.STDOUT, env=env)
         if not sorted(msa_dir.glob("*.a3m")):
             print("[MSA] --msa-only unavailable; falling back to a 1-seed/1-model pass",
                   flush=True)
             subprocess.run([colabfold_bin, "--num-seeds", "1", "--num-models", "1",
-                            str(fasta), str(msa_dir)], stdout=lf, stderr=subprocess.STDOUT)
+                            str(fasta), str(msa_dir)], stdout=lf, stderr=subprocess.STDOUT,
+                           env=env)
 
     found = sorted(msa_dir.glob("*.a3m"))
     if found:
@@ -186,6 +187,8 @@ def run_colabfold(work_dir, pred_dir, fasta, uniprot, num_seeds, models_per_seed
         # Container runtimes bind $HOME, so a user's ~/.local site-packages
         # shadows the image's. A Biopython >= 1.80 there breaks AlphaFold's
         # `from Bio.Data import SCOPData` before colabfold_batch can start.
+        # Scoped to the ColabFold subprocesses: steps 02/03/05 legitimately
+        # need numpy and pandas, which may themselves live in ~/.local.
         "PYTHONNOUSERSITE": "1",
         "JAX_PLATFORMS": "cpu",
         "CUDA_VISIBLE_DEVICES": "",
@@ -198,7 +201,7 @@ def run_colabfold(work_dir, pred_dir, fasta, uniprot, num_seeds, models_per_seed
                       % (threads_per_worker, threads_per_worker)),
     })
 
-    msa_a3m = build_shared_msa(colabfold_bin, fasta, work_dir / "msa")
+    msa_a3m = build_shared_msa(colabfold_bin, fasta, work_dir / "msa", env=env)
     worker_input = msa_a3m if msa_a3m is not None else fasta
 
     processes = []
@@ -278,7 +281,6 @@ def run_colabfold(work_dir, pred_dir, fasta, uniprot, num_seeds, models_per_seed
 
 
 def main():
-    os.environ.setdefault("PYTHONNOUSERSITE", "1")
     args = parse_args()
     work_dir = args.workdir.resolve()
     input_json = args.input.resolve()
