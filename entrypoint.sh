@@ -13,10 +13,9 @@ Required:
   --ncpus     CPUs available to this container instance.
 
 Optional env:
-  THREADS_PER_WORKER      ColabFold worker threads (default: 1).
-                          JAX/AlphaFold does not use 8 CPU threads well;
-                          1 thread per worker fills --ncpus with independent
-                          seed jobs. Raise this if RAM is tight.
+  THREADS_PER_WORKER      ColabFold worker threads (default: 8).
+                          For CPU tests, try 2 then 1. Seeds are split
+                          exactly across workers (no ceil overflow).
   ROSETTA_BIN             per_residue_solvent_exposure binary.
   NC_METHOD               Rosetta NC method: cone or sphere (default: cone).
   PAIRWISE_THRESHOLD      Minimum |ΔNC| for reporters (default: 5).
@@ -42,9 +41,8 @@ fi
 
 ROSETTA_BIN="${ROSETTA_BIN:-/opt/conda/bin/per_residue_solvent_exposure.linuxgccrelease}"
 SCRIPTS_DIR="/opt/pipeline/pipeline_steps"
-# One thread per ColabFold process. Extra OpenMP/XLA threads do not speed
-# AF2 on CPU and they cut the number of parallel seed workers.
-THREADS_PER_WORKER="${THREADS_PER_WORKER:-1}"
+# Keep 8 until THREADS_PER_WORKER=2 and =1 are timed on a 32-core node.
+THREADS_PER_WORKER="${THREADS_PER_WORKER:-8}"
 NC_METHOD="${NC_METHOD:-cone}"
 PAIRWISE_THRESHOLD="${PAIRWISE_THRESHOLD:-5}"
 RUN_LEGACY_DECISION="${RUN_LEGACY_DECISION:-0}"
@@ -68,10 +66,12 @@ mkdir -p "$PRED_DIR" "$ANALYSIS_DIR" "$ROSETTA_OUT" "$PAIRWISE_OUT" "$DECISION_O
 
 NUM_WORKERS=$(( NCPUS / THREADS_PER_WORKER ))
 if [[ "$NUM_WORKERS" -lt 1 ]]; then NUM_WORKERS=1; fi
-SEEDS_PER_WORKER=$(( (NUM_SEEDS + NUM_WORKERS - 1) / NUM_WORKERS ))
+BASE_SEEDS=$(( NUM_SEEDS / NUM_WORKERS ))
+REMAINDER=$(( NUM_SEEDS % NUM_WORKERS ))
 
 echo "HOST=$(hostname) NCPUS=${NCPUS} THREADS_PER_WORKER=${THREADS_PER_WORKER} NUM_WORKERS=${NUM_WORKERS}"
 echo "UNIPROT=${UNIPROT} NUM_SEEDS=${NUM_SEEDS} MODELS_PER_SEED=${MODELS_PER_SEED} NC_METHOD=${NC_METHOD}"
+echo "SEED_SPLIT BASE=${BASE_SEEDS} REMAINDER=${REMAINDER} (first ${REMAINDER} workers get BASE+1)"
 
 export JAX_PLATFORMS=cpu
 export CUDA_VISIBLE_DEVICES=""
@@ -81,21 +81,39 @@ export MKL_NUM_THREADS="$THREADS_PER_WORKER"
 export XLA_FLAGS="--xla_cpu_multi_thread_eigen=true intra_op_parallelism_threads=${THREADS_PER_WORKER} inter_op_parallelism_threads=${THREADS_PER_WORKER}"
 
 pids=()
+START_SEED=0
 for ((w=0; w<NUM_WORKERS; w++)); do
- START_SEED=$(( w * SEEDS_PER_WORKER ))
+ WORKER_SEEDS=$BASE_SEEDS
+ if (( w < REMAINDER )); then
+  WORKER_SEEDS=$(( WORKER_SEEDS + 1 ))
+ fi
+ if (( WORKER_SEEDS == 0 )); then
+  continue
+ fi
  WORKER_OUT="${PRED_DIR}/worker_${w}"
  mkdir -p "$WORKER_OUT"
  CORE_START=$(( w * THREADS_PER_WORKER ))
  CORE_END=$(( CORE_START + THREADS_PER_WORKER - 1 ))
+ echo "WORKER ${w} seeds=${WORKER_SEEDS} random-seed=${START_SEED} cores=${CORE_START}-${CORE_END}"
  taskset -c "${CORE_START}-${CORE_END}" \
  python "$SCRIPTS_DIR/01_run_colabfold_batch.py" \
  --fasta "$FASTA" --out-dir "$WORKER_OUT" \
- --num-seeds "$SEEDS_PER_WORKER" --models-per-seed "$MODELS_PER_SEED" \
+ --num-seeds "$WORKER_SEEDS" --models-per-seed "$MODELS_PER_SEED" \
  --random-seed "$START_SEED" \
  --extra-args --max-msa 16:32 --use-dropout \
  > "${WORKER_OUT}/worker_${w}.log" 2>&1 &
  pids+=($!)
+ START_SEED=$(( START_SEED + WORKER_SEEDS ))
 done
+echo "LAUNCHED_SEEDS=${START_SEED} (expected ${NUM_SEEDS})"
+if [[ "$START_SEED" -ne "$NUM_SEEDS" ]]; then
+ echo "ERROR: launched seeds ${START_SEED} != NUM_SEEDS ${NUM_SEEDS}" >&2
+ exit 1
+fi
+if [[ ${#pids[@]} -eq 0 ]]; then
+ echo "ERROR: no ColabFold workers launched" >&2
+ exit 1
+fi
 for pid in "${pids[@]}"; do wait "$pid"; done
 for d in "${PRED_DIR}"/worker_*/; do
  cp -n "$d"*.pdb "$d"*.json "$d"*.a3m "$PRED_DIR"/ 2>/dev/null || true
