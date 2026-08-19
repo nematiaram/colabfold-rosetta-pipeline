@@ -104,6 +104,12 @@ def main():
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--k", type=int, default=3)
     ap.add_argument("--random-state", type=int, default=0)
+    ap.add_argument("--min-plddt", type=float, default=0.0,
+                    help="Drop models below this mean pLDDT before clustering. "
+                         "Default 0 (keep everything) so results stay reproducible; "
+                         "raise it to stop badly-folded models becoming a 'state'.")
+    ap.add_argument("--warn-plddt", type=float, default=70.0,
+                    help="Warn if a chosen representative falls below this mean pLDDT.")
     args = ap.parse_args()
 
     pred_dir = Path(args.pred_dir)
@@ -123,6 +129,16 @@ def main():
         })
 
     df = pd.DataFrame(records).sort_values("mean_plddt", ascending=False).reset_index(drop=True)
+
+    if args.min_plddt > 0:
+        n_before = len(df)
+        df = df[df["mean_plddt"] >= args.min_plddt].reset_index(drop=True)
+        print(f"[{args.uniprot}] pLDDT filter >= {args.min_plddt}: kept {len(df)}/{n_before} models")
+        if df.empty:
+            raise RuntimeError(
+                f"No models left after --min-plddt {args.min_plddt}; lower it or check the predictions."
+            )
+
     best_row = df.iloc[0]
     best_path = best_row["pdb_path"]
     best_ca = get_ca_coords(best_path)
@@ -158,6 +174,18 @@ def main():
 
     reps_df = pd.DataFrame(rep_rows).reset_index(drop=True)
     reps_df["rep_id"] = [f"rep_cluster{i+1}" for i in range(len(reps_df))]
+
+    # A cluster far from the reference can be a genuine alternative conformation
+    # or simply a badly-folded model. Downstream ΔNC cannot tell the difference,
+    # so say so loudly rather than silently treating it as a state.
+    for _, r in reps_df.iterrows():
+        if r["mean_plddt"] < args.warn_plddt:
+            print(
+                f"[{args.uniprot}] WARNING: {r['rep_id']} has mean pLDDT "
+                f"{r['mean_plddt']:.1f} (< {args.warn_plddt}) at RMSD "
+                f"{r['rmsd_to_best']:.1f} A from the reference. Every delta-NC value "
+                f"involving it may reflect a poor prediction, not an alternative state."
+            )
 
     df_best["cluster"] = -1
     df_best["rep_id"] = "best_ref"
