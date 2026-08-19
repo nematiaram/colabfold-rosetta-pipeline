@@ -16,6 +16,7 @@ Optional env:
   THREADS_PER_WORKER      ColabFold worker threads (default: 8).
                           For CPU tests, try 2 then 1. Seeds are split
                           exactly across workers (no ceil overflow).
+  COLABFOLD_BIN           ColabFold executable (default: colabfold_batch).
   ROSETTA_BIN             per_residue_solvent_exposure binary.
   NC_METHOD               Rosetta NC method: cone or sphere (default: cone).
   PAIRWISE_THRESHOLD      Minimum |ΔNC| for reporters (default: 5).
@@ -39,6 +40,7 @@ if [[ -z "$WORK_DIR" || -z "$INPUT_JSON" || -z "$NCPUS" ]]; then
  usage; exit 1
 fi
 
+COLABFOLD_BIN="${COLABFOLD_BIN:-colabfold_batch}"
 ROSETTA_BIN="${ROSETTA_BIN:-/opt/conda/bin/per_residue_solvent_exposure.linuxgccrelease}"
 SCRIPTS_DIR="/opt/pipeline/pipeline_steps"
 # Keep 8 until THREADS_PER_WORKER=2 and =1 are timed on a 32-core node.
@@ -64,6 +66,33 @@ PAIRWISE_OUT="${WORK_DIR}/pairwise"
 DECISION_OUT="${WORK_DIR}/decision"
 mkdir -p "$PRED_DIR" "$ANALYSIS_DIR" "$ROSETTA_OUT" "$PAIRWISE_OUT" "$DECISION_OUT"
 
+# Do not assume this job owns cores 0..NCPUS-1. Under SGE/SLURM, and in any
+# cpuset-constrained container, the allocated CPU ids can be an arbitrary set
+# such as 40-51; pinning to 0..N-1 then makes every taskset call fail with
+# "Invalid argument" and kills the run. Ask the kernel what we may use.
+ALLOWED_CPUS=()
+while read -r cpu; do ALLOWED_CPUS+=("$cpu"); done < <(
+  python -c 'import os; print("\n".join(str(c) for c in sorted(os.sched_getaffinity(0))))' 2>/dev/null
+)
+N_ALLOWED=${#ALLOWED_CPUS[@]}
+if [[ "$N_ALLOWED" -eq 0 ]]; then
+ echo "WARNING: could not read CPU affinity; assuming cores 0-$((NCPUS - 1))." >&2
+ for ((c=0; c<NCPUS; c++)); do ALLOWED_CPUS+=("$c"); done
+ N_ALLOWED=$NCPUS
+fi
+if [[ "$NCPUS" -gt "$N_ALLOWED" ]]; then
+ echo "WARNING: --ncpus ${NCPUS} exceeds the ${N_ALLOWED} CPUs this process may use; clamping to ${N_ALLOWED}." >&2
+ NCPUS=$N_ALLOWED
+fi
+
+if [[ "$THREADS_PER_WORKER" -gt "$NCPUS" ]]; then
+ echo "WARNING: THREADS_PER_WORKER ${THREADS_PER_WORKER} exceeds the ${NCPUS} usable CPUs; clamping to ${NCPUS}." >&2
+ THREADS_PER_WORKER=$NCPUS
+fi
+
+HAVE_TASKSET=1
+command -v taskset >/dev/null 2>&1 || { HAVE_TASKSET=0; echo "WARNING: taskset not found; workers will not be pinned." >&2; }
+
 NUM_WORKERS=$(( NCPUS / THREADS_PER_WORKER ))
 if [[ "$NUM_WORKERS" -lt 1 ]]; then NUM_WORKERS=1; fi
 BASE_SEEDS=$(( NUM_SEEDS / NUM_WORKERS ))
@@ -72,6 +101,7 @@ REMAINDER=$(( NUM_SEEDS % NUM_WORKERS ))
 echo "HOST=$(hostname) NCPUS=${NCPUS} THREADS_PER_WORKER=${THREADS_PER_WORKER} NUM_WORKERS=${NUM_WORKERS}"
 echo "UNIPROT=${UNIPROT} NUM_SEEDS=${NUM_SEEDS} MODELS_PER_SEED=${MODELS_PER_SEED} NC_METHOD=${NC_METHOD}"
 echo "SEED_SPLIT BASE=${BASE_SEEDS} REMAINDER=${REMAINDER} (first ${REMAINDER} workers get BASE+1)"
+echo "ALLOWED_CPUS=${ALLOWED_CPUS[*]}"
 
 export JAX_PLATFORMS=cpu
 export CUDA_VISIBLE_DEVICES=""
@@ -80,7 +110,34 @@ export OPENBLAS_NUM_THREADS="$THREADS_PER_WORKER"
 export MKL_NUM_THREADS="$THREADS_PER_WORKER"
 export XLA_FLAGS="--xla_cpu_multi_thread_eigen=true intra_op_parallelism_threads=${THREADS_PER_WORKER} inter_op_parallelism_threads=${THREADS_PER_WORKER}"
 
+# Build the MSA exactly once. Otherwise every one of NUM_WORKERS processes
+# queries the MMseqs2 API for the same sequence: N-1 redundant round-trips
+# before any folding starts, and a reliable way to get rate-limited.
+MSA_DIR="${WORK_DIR}/msa"
+mkdir -p "$MSA_DIR"
+WORKER_INPUT="$FASTA"
+if compgen -G "${MSA_DIR}/*.a3m" > /dev/null 2>&1; then
+ echo "[MSA] reusing existing a3m in ${MSA_DIR}"
+else
+ if "$COLABFOLD_BIN" --help 2>&1 | grep -q -- '--msa-only'; then
+  echo "[MSA] building shared MSA (--msa-only)"
+  "$COLABFOLD_BIN" --msa-only "$FASTA" "$MSA_DIR" > "${MSA_DIR}/msa.log" 2>&1 || true
+ fi
+ if ! compgen -G "${MSA_DIR}/*.a3m" > /dev/null 2>&1; then
+  echo "[MSA] --msa-only unavailable; falling back to a 1-seed/1-model pass"
+  "$COLABFOLD_BIN" --num-seeds 1 --num-models 1 "$FASTA" "$MSA_DIR" >> "${MSA_DIR}/msa.log" 2>&1 || true
+ fi
+fi
+A3M="$(ls -1 "${MSA_DIR}"/*.a3m 2>/dev/null | head -n1)"
+if [[ -n "$A3M" ]]; then
+ WORKER_INPUT="$A3M"
+ echo "[MSA] workers reuse ${A3M} (0 per-worker MSA queries)"
+else
+ echo "[MSA] WARNING: no a3m produced; each worker will build its own MSA." >&2
+fi
+
 pids=()
+WORKER_IDS=()
 START_SEED=0
 for ((w=0; w<NUM_WORKERS; w++)); do
  WORKER_SEEDS=$BASE_SEEDS
@@ -92,17 +149,26 @@ for ((w=0; w<NUM_WORKERS; w++)); do
  fi
  WORKER_OUT="${PRED_DIR}/worker_${w}"
  mkdir -p "$WORKER_OUT"
- CORE_START=$(( w * THREADS_PER_WORKER ))
- CORE_END=$(( CORE_START + THREADS_PER_WORKER - 1 ))
- echo "WORKER ${w} seeds=${WORKER_SEEDS} random-seed=${START_SEED} cores=${CORE_START}-${CORE_END}"
- taskset -c "${CORE_START}-${CORE_END}" \
+ CORE_LIST=""
+ for ((t=0; t<THREADS_PER_WORKER; t++)); do
+  idx=$(( w * THREADS_PER_WORKER + t ))
+  if [[ "$idx" -ge "$N_ALLOWED" ]]; then break; fi
+  CORE_LIST="${CORE_LIST:+${CORE_LIST},}${ALLOWED_CPUS[$idx]}"
+ done
+ PIN=(taskset -c "$CORE_LIST")
+ if [[ "$HAVE_TASKSET" -eq 0 || -z "$CORE_LIST" ]]; then PIN=(); fi
+ echo "WORKER ${w} seeds=${WORKER_SEEDS} random-seed=${START_SEED} cores=${CORE_LIST}"
+ # ${PIN[@]+...} guard: bash < 4.4 treats an empty array as unbound under set -u.
+ ${PIN[@]+"${PIN[@]}"} \
  python "$SCRIPTS_DIR/01_run_colabfold_batch.py" \
- --fasta "$FASTA" --out-dir "$WORKER_OUT" \
+ --fasta "$WORKER_INPUT" --out-dir "$WORKER_OUT" \
+ --colabfold-bin "$COLABFOLD_BIN" \
  --num-seeds "$WORKER_SEEDS" --models-per-seed "$MODELS_PER_SEED" \
  --random-seed "$START_SEED" \
  --extra-args --max-msa 16:32 --use-dropout \
  > "${WORKER_OUT}/worker_${w}.log" 2>&1 &
  pids+=($!)
+ WORKER_IDS+=("$w")
  START_SEED=$(( START_SEED + WORKER_SEEDS ))
 done
 echo "LAUNCHED_SEEDS=${START_SEED} (expected ${NUM_SEEDS})"
@@ -114,10 +180,34 @@ if [[ ${#pids[@]} -eq 0 ]]; then
  echo "ERROR: no ColabFold workers launched" >&2
  exit 1
 fi
-for pid in "${pids[@]}"; do wait "$pid"; done
+# Report which worker died and why. Bare `wait` under set -e aborted the run
+# with nothing on stdout, leaving the reason buried in a per-worker log.
+FAILED=0
+for i in "${!pids[@]}"; do
+ w="${WORKER_IDS[$i]}"
+ if ! wait "${pids[$i]}"; then
+  FAILED=$(( FAILED + 1 ))
+  echo "ERROR: ColabFold worker ${w} failed; last lines of its log:" >&2
+  tail -n 15 "${PRED_DIR}/worker_${w}/worker_${w}.log" >&2 || true
+ fi
+done
+if [[ "$FAILED" -gt 0 ]]; then
+ echo "ERROR: ${FAILED} of ${#pids[@]} ColabFold workers failed." >&2
+ echo "Predictions from surviving workers are kept in ${PRED_DIR}/worker_*/." >&2
+ echo "To resume from them: consolidate the PDBs and rerun with SKIP_COLABFOLD=1." >&2
+fi
+
+# Consolidate before bailing out, so a partial run stays resumable.
 for d in "${PRED_DIR}"/worker_*/; do
  cp -n "$d"*.pdb "$d"*.json "$d"*.a3m "$PRED_DIR"/ 2>/dev/null || true
 done
+N_PDB=$(ls -1 "${PRED_DIR}"/*.pdb 2>/dev/null | wc -l)
+echo "[COLABFOLD] consolidated ${N_PDB} PDBs into ${PRED_DIR}"
+if [[ "$FAILED" -gt 0 ]]; then exit 1; fi
+if [[ "$N_PDB" -eq 0 ]]; then
+ echo "ERROR: no PDBs were produced." >&2
+ exit 1
+fi
 
 python "$SCRIPTS_DIR/02_plddt_rmsd_kmeans.py" \
  --uniprot "$UNIPROT" --pred-dir "$PRED_DIR" --out-dir "$ANALYSIS_DIR"
