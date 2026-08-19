@@ -43,8 +43,9 @@ fi
 COLABFOLD_BIN="${COLABFOLD_BIN:-colabfold_batch}"
 ROSETTA_BIN="${ROSETTA_BIN:-/opt/conda/bin/per_residue_solvent_exposure.linuxgccrelease}"
 SCRIPTS_DIR="/opt/pipeline/pipeline_steps"
-# Keep 8 until THREADS_PER_WORKER=2 and =1 are timed on a 32-core node.
-THREADS_PER_WORKER="${THREADS_PER_WORKER:-8}"
+# One thread per ColabFold process. AF2 on CPU does not use 8 OpenMP threads
+# well, and fat workers cut the number of independent seed jobs in flight.
+THREADS_PER_WORKER="${THREADS_PER_WORKER:-1}"
 NC_METHOD="${NC_METHOD:-cone}"
 PAIRWISE_THRESHOLD="${PAIRWISE_THRESHOLD:-5}"
 RUN_LEGACY_DECISION="${RUN_LEGACY_DECISION:-0}"
