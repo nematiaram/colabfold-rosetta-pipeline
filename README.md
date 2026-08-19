@@ -262,35 +262,28 @@ ColabFold.
 The cluster entrypoint distributes ColabFold calculations across multiple CPU
 workers.
 
-The default number of threads assigned to each worker is:
+The default is one CPU thread per ColabFold process:
 
 ```text
-THREADS_PER_WORKER=8
-```
-
-The approximate number of workers is:
-
-```text
+THREADS_PER_WORKER=1
 NUM_WORKERS = NCPUS / THREADS_PER_WORKER
 ```
 
-For example:
+AlphaFold/JAX on CPU does not scale with 8 OpenMP threads. Pinning each
+worker to 8 cores therefore leaves most of `--ncpus` idle (~12 cores busy
+on a 32-core job). Independent seeds do parallelize, so the default is
+many 1-thread workers:
 
 ```text
 --ncpus 32
-THREADS_PER_WORKER=8
+THREADS_PER_WORKER=1
 
-32 / 8 = 4 workers
+32 / 1 = 32 workers
 ```
 
-For a job requesting 1000 seeds, this results in approximately:
-
-```text
-Worker 0: seeds   0–249
-Worker 1: seeds 250–499
-Worker 2: seeds 500–749
-Worker 3: seeds 750–999
-```
+For a job requesting 300 seeds, this is about 10 seeds per worker (then
+`models_per_seed` models each). If the node runs out of RAM, raise
+`THREADS_PER_WORKER` to 2 or 4 (fewer processes, more cores unused).
 
 Each worker writes its results into:
 
@@ -816,7 +809,7 @@ The JSON/cluster entrypoint supports the following environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `THREADS_PER_WORKER` | 8 | Number of CPU threads assigned to each ColabFold worker. |
+| `THREADS_PER_WORKER` | 1 | CPU threads per ColabFold worker. Default 1 so `--ncpus` is filled with independent seed jobs. Raise to 2 or 4 if RAM is the limit. |
 | `ROSETTA_BIN` | image-provided path (`/opt/rosetta-bin` in the Dockerfile) | Path to Rosetta `per_residue_solvent_exposure`. |
 | `NC_METHOD` | `cone` | Rosetta neighbor-count method. May be `cone` or `sphere`. |
 | `PAIRWISE_THRESHOLD` | `5` | Minimum absolute pairwise ΔNC required for reporter designation. |
