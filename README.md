@@ -314,6 +314,44 @@ CUDA_VISIBLE_DEVICES=""
 
 and uses CPU affinity (`taskset`) to assign cores to individual workers.
 
+### CPU allocation
+
+Worker pinning uses the CPUs the process is actually allowed to run on
+(`os.sched_getaffinity`), not `0 .. ncpus-1`. Under SGE/SLURM a job's cpuset is
+frequently a non-zero-based range such as `40-51`; assuming `0..N-1` there makes
+every `taskset` call fail with `Invalid argument`. The allocated set is printed
+at startup:
+
+```text
+ALLOWED_CPUS=40 41 42 43 44 45 46 47 48 49 50 51
+```
+
+If `--ncpus` is larger than that set, it is clamped with a warning instead of
+failing. If `taskset` is unavailable, workers run unpinned.
+
+### Shared MSA
+
+The MSA is built once, before the workers start, and every worker is handed the
+resulting `.a3m`:
+
+```text
+[MSA] building shared MSA (--msa-only)
+[MSA] workers reuse <workdir>/msa/<job>.a3m (0 per-worker MSA queries)
+```
+
+Previously each worker ran `colabfold_batch` on the FASTA and independently
+queried the MMseqs2 API for the same sequence, which is `NUM_WORKERS - 1`
+redundant lookups and a common cause of rate-limiting. A rerun reuses an
+existing `msa/*.a3m` and skips the lookup entirely. ColabFold builds without
+`--msa-only` fall back to a single 1-seed/1-model pass, which yields the same
+`.a3m`.
+
+### Worker failures
+
+If a worker exits non-zero the run reports which one, tails its log, and still
+consolidates the surviving predictions into `colabfold/` before exiting, so a
+partial run can be resumed with `SKIP_COLABFOLD=1`.
+
 ---
 
 ## 6. Structural comparison and representative selection
@@ -379,6 +417,12 @@ Cluster 3 → Rep 3
 
 Within each cluster, the candidate structure with the highest mean pLDDT is
 selected as that cluster's representative.
+
+Representative selection applies no pLDDT floor by default, so a cluster that is
+far from the reference may be a badly-folded model rather than an alternative
+conformation. Step 2 warns when a chosen representative falls below mean pLDDT
+70 (`--warn-plddt`), and `--min-plddt` drops low-confidence models before
+clustering. The default of `0` keeps previous results reproducible.
 
 The output is therefore three alternative computational structures:
 
@@ -818,7 +862,8 @@ The JSON/cluster entrypoint supports the following environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `THREADS_PER_WORKER` | 8 | CPU threads per ColabFold worker. Keep 8 until `2` then `1` are timed; pass `-e THREADS_PER_WORKER=2` (or `1`) for those tests. |
+| `THREADS_PER_WORKER` | 8 | CPU threads per ColabFold worker. Keep 8 until `2` then `1` are timed; pass `-e THREADS_PER_WORKER=2` (or `1`) for those tests. Clamped down if it exceeds the usable CPU count. |
+| `COLABFOLD_BIN` | `colabfold_batch` | ColabFold executable used for both the shared-MSA pass and the workers. |
 | `ROSETTA_BIN` | image-provided path (`/opt/rosetta-bin` in the Dockerfile) | Path to Rosetta `per_residue_solvent_exposure`. |
 | `NC_METHOD` | `cone` | Rosetta neighbor-count method. May be `cone` or `sphere`. |
 | `PAIRWISE_THRESHOLD` | `5` | Minimum absolute pairwise ΔNC required for reporter designation. |

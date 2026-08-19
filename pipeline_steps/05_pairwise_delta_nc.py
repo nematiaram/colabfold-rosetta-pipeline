@@ -226,7 +226,7 @@ def write_recommendation(uid: str, picks: pd.DataFrame, path: Path) -> None:
                 f"{p['pair_short']}: {p['Residue']}  ΔNC={p['pair_diff']:.2f}  "
                 f"more labeled in {p['more_exposed_rep']}  →  {p['preferred_reagent']}"
             )
-    path.write_text("\n".join(lines) + "\n")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def main():

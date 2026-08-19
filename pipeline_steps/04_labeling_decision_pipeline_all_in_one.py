@@ -544,7 +544,7 @@ def design_tests_from_rules(uid: str, rules_df: pd.DataFrame, out_dir: Path,
     out_txt = out_dir / f"{uid}_tests_per_reagent.txt"
     out_tsv = out_dir / f"{uid}_tests_per_reagent.tsv"
     if rules_df.empty:
-        out_txt.write_text("")
+        out_txt.write_text("", encoding="utf-8")
         pd.DataFrame().to_csv(out_tsv, sep="\t", index=False)
         return out_txt, out_tsv
     blocks, rows_out = [], []
@@ -568,7 +568,7 @@ def design_tests_from_rules(uid: str, rules_df: pd.DataFrame, out_dir: Path,
             row[f"{prefix}_if_no_label"] = "/".join(b["step2_if_no_label"])
             row[f"{prefix}_decision"] = "/".join(b["decision"])
         rows_out.append(row)
-    out_txt.write_text("\n\n".join(blocks))
+    out_txt.write_text("\n\n".join(blocks), encoding="utf-8")
     pd.DataFrame(rows_out).to_csv(out_tsv, sep="\t", index=False)
     return out_txt, out_tsv
 
@@ -871,7 +871,7 @@ def rank_reagents_for_threeway(uid: str, rules_df: pd.DataFrame, out_dir: Path,
             "total_diff", "min_diff", "total_margin"
         ])
         out.to_csv(out_dir / f"{uid}_best_single_reagent_summary.tsv", sep='\t', index=False)
-        (out_dir / f"{uid}_best_single_reagent.txt").write_text("No reagent rules available.\n")
+        (out_dir / f"{uid}_best_single_reagent.txt").write_text("No reagent rules available.\n", encoding="utf-8")
         return out
 
     for reagent, sub in rules_df.groupby("reagent", sort=True):
@@ -883,7 +883,7 @@ def rank_reagents_for_threeway(uid: str, rules_df: pd.DataFrame, out_dir: Path,
     out = pd.DataFrame(rows)
     if out.empty:
         out.to_csv(out_dir / f"{uid}_best_single_reagent_summary.tsv", sep='\t', index=False)
-        (out_dir / f"{uid}_best_single_reagent.txt").write_text("No reagent rules available.\n")
+        (out_dir / f"{uid}_best_single_reagent.txt").write_text("No reagent rules available.\n", encoding="utf-8")
         return out
 
     out = out.sort_values(
@@ -906,7 +906,7 @@ def rank_reagents_for_threeway(uid: str, rules_df: pd.DataFrame, out_dir: Path,
         "",
         "Signature code: 1 = label, 0 = no label, ? = ambiguous",
     ]
-    (out_dir / f"{uid}_best_single_reagent.txt").write_text("\n".join(lines) + "\n")
+    (out_dir / f"{uid}_best_single_reagent.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return out
 
 
@@ -1066,7 +1066,7 @@ def write_best_single_reagent_outputs(uid: str, summary_df: pd.DataFrame, rules_
     best_rows_path = out_dir / f"{uid}_best_single_reagent_residues.tsv"
 
     if summary_df.empty:
-        txt_path.write_text(f"No best single reagent recommendation could be generated for {uid}.\n")
+        txt_path.write_text(f"No best single reagent recommendation could be generated for {uid}.\n", encoding="utf-8")
         fig, ax = plt.subplots(figsize=(8, 2.4))
         ax.axis("off")
         ax.text(0.5, 0.5, f"{uid}: no final recommendation available", ha="center", va="center", fontsize=12)
@@ -1127,7 +1127,7 @@ def write_best_single_reagent_outputs(uid: str, summary_df: pd.DataFrame, rules_
             lines.append(f"       • not labeled -> {fmt_rep_set(no_label_branch['step2_if_no_label'])}")
 
     lines += ["", "Signature code: 1 = label, 0 = no label, ? = ambiguous"]
-    txt_path.write_text("\n".join(lines) + "\n")
+    txt_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     # Figure
     fig, ax = plt.subplots(figsize=(11, 8.5), facecolor=COLORS["bg"])

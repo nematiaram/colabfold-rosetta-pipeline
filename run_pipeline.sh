@@ -19,7 +19,10 @@ Required:
 
 Optional:
   COLABFOLD_BIN          ColabFold executable (default: colabfold_batch)
-  COLABFOLD_NUM_MODELS   Target number of models (default: 1500)
+  COLABFOLD_NUM_SEEDS    ColabFold seeds to sample (default: 300)
+  COLABFOLD_MODELS_PER_SEED  AF2 models per seed, 1-5 (default: 5)
+  COLABFOLD_NUM_MODELS   Legacy: target total models; converted to
+                         num_seeds = ceil(NUM_MODELS / MODELS_PER_SEED)
   COLABFOLD_EXTRA_ARGS   Extra args for colabfold_batch (quoted string)
   NC_METHOD              Rosetta NC method: cone or sphere (default: cone)
   PAIRWISE_THRESHOLD     Minimum |ΔNC| for reporters (default: 5)
@@ -47,7 +50,12 @@ WORK_DIR="$1"
 UNIPROT="${UNIPROT:-}"
 FASTA="${FASTA:-}"
 COLABFOLD_BIN="${COLABFOLD_BIN:-colabfold_batch}"
-COLABFOLD_NUM_MODELS="${COLABFOLD_NUM_MODELS:-1500}"
+COLABFOLD_MODELS_PER_SEED="${COLABFOLD_MODELS_PER_SEED:-5}"
+if [[ -n "${COLABFOLD_NUM_MODELS:-}" ]]; then
+  # Legacy knob: a total model count. Step 01 takes seeds x models-per-seed.
+  COLABFOLD_NUM_SEEDS="${COLABFOLD_NUM_SEEDS:-$(( (COLABFOLD_NUM_MODELS + COLABFOLD_MODELS_PER_SEED - 1) / COLABFOLD_MODELS_PER_SEED ))}"
+fi
+COLABFOLD_NUM_SEEDS="${COLABFOLD_NUM_SEEDS:-300}"
 ROSETTA_BIN="${ROSETTA_BIN:-per_residue_solvent_exposure.linuxgccrelease}"
 NC_METHOD="${NC_METHOD:-cone}"
 PAIRWISE_THRESHOLD="${PAIRWISE_THRESHOLD:-5}"
@@ -88,19 +96,22 @@ mkdir -p "$PRED_DIR" "$ANALYSIS_DIR" "$ROSETTA_OUT" "$PAIRWISE_OUT" "$DECISION_O
 
 if [[ "$SKIP_COLABFOLD" != "1" ]]; then
   echo "=== Step 1: ColabFold ==="
+  echo "    seeds=${COLABFOLD_NUM_SEEDS} models_per_seed=${COLABFOLD_MODELS_PER_SEED}"
   if [[ ${#COLABFOLD_ARGS[@]} -gt 0 ]]; then
     python "$SCRIPTS_DIR/01_run_colabfold_batch.py" \
       --fasta "$FASTA" \
       --out-dir "$PRED_DIR" \
       --colabfold-bin "$COLABFOLD_BIN" \
-      --num-models "$COLABFOLD_NUM_MODELS" \
+      --num-seeds "$COLABFOLD_NUM_SEEDS" \
+      --models-per-seed "$COLABFOLD_MODELS_PER_SEED" \
       --extra-args "${COLABFOLD_ARGS[@]}"
   else
     python "$SCRIPTS_DIR/01_run_colabfold_batch.py" \
       --fasta "$FASTA" \
       --out-dir "$PRED_DIR" \
       --colabfold-bin "$COLABFOLD_BIN" \
-      --num-models "$COLABFOLD_NUM_MODELS"
+      --num-seeds "$COLABFOLD_NUM_SEEDS" \
+      --models-per-seed "$COLABFOLD_MODELS_PER_SEED"
   fi
 else
   echo "=== Step 1: ColabFold (skipped) ==="
