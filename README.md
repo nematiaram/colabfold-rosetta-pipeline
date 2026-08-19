@@ -270,19 +270,18 @@ workers.
 NUM_WORKERS = NCPUS / THREADS_PER_WORKER
 ```
 
-The image default is still `THREADS_PER_WORKER=8` (4 workers on 32 CPUs).
-JAX/AlphaFold on CPU does not use those 8 threads well, so a 32-core job
-typically sits near ~12 cores. Do not treat CPU percent as the score;
-compare wall-clock time.
+The image default is `THREADS_PER_WORKER=1` (32 workers on 32 CPUs).
+JAX/AlphaFold on CPU does not use 8 OpenMP threads well, so fat workers leave
+most of `--ncpus` idle while cutting the number of independent seed jobs in
+flight. Do not treat CPU percent as the score; compare wall-clock time.
 
-Until a new default is chosen, pass the thread count explicitly:
+Raise it only if memory is the binding constraint -- fewer, fatter workers
+lower peak RAM, which matters for large targets where each worker needs
+several GB:
 
 ```text
-# first test (16 workers on 32 CPUs)
--e THREADS_PER_WORKER=2
-
-# if RAM is fine and CPU is still low (32 workers)
--e THREADS_PER_WORKER=1
+-e THREADS_PER_WORKER=2   # 16 workers on 32 CPUs
+-e THREADS_PER_WORKER=8   # 4 workers on 32 CPUs, lowest peak RAM
 ```
 
 Seeds are split exactly. No worker is given `ceil(NUM_SEEDS / NUM_WORKERS)`
@@ -866,7 +865,7 @@ The JSON/cluster entrypoint supports the following environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `THREADS_PER_WORKER` | 8 | CPU threads per ColabFold worker. Keep 8 until `2` then `1` are timed; pass `-e THREADS_PER_WORKER=2` (or `1`) for those tests. Clamped down if it exceeds the usable CPU count. |
+| `THREADS_PER_WORKER` | 1 | CPU threads per ColabFold worker. Default 1 so `--ncpus` is filled with independent seed jobs. Raise to 2 or 8 if RAM is the limit. Clamped down if it exceeds the usable CPU count. |
 | `COLABFOLD_BIN` | `colabfold_batch` | ColabFold executable used for both the shared-MSA pass and the workers. |
 | `ROSETTA_BIN` | image-provided path (`/opt/rosetta-bin` in the Dockerfile) | Path to Rosetta `per_residue_solvent_exposure`. |
 | `NC_METHOD` | `cone` | Rosetta neighbor-count method. May be `cone` or `sphere`. |
