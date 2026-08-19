@@ -183,6 +183,10 @@ def run_colabfold(work_dir, pred_dir, fasta, uniprot, num_seeds, models_per_seed
 
     env = os.environ.copy()
     env.update({
+        # Container runtimes bind $HOME, so a user's ~/.local site-packages
+        # shadows the image's. A Biopython >= 1.80 there breaks AlphaFold's
+        # `from Bio.Data import SCOPData` before colabfold_batch can start.
+        "PYTHONNOUSERSITE": "1",
         "JAX_PLATFORMS": "cpu",
         "CUDA_VISIBLE_DEVICES": "",
         "OMP_NUM_THREADS": str(threads_per_worker),
@@ -274,6 +278,7 @@ def run_colabfold(work_dir, pred_dir, fasta, uniprot, num_seeds, models_per_seed
 
 
 def main():
+    os.environ.setdefault("PYTHONNOUSERSITE", "1")
     args = parse_args()
     work_dir = args.workdir.resolve()
     input_json = args.input.resolve()
