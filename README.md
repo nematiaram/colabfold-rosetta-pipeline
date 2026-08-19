@@ -266,19 +266,31 @@ workers.
 NUM_WORKERS = NCPUS / THREADS_PER_WORKER
 ```
 
-The image default is still `THREADS_PER_WORKER=8` (4 workers on 32 CPUs).
-JAX/AlphaFold on CPU does not use those 8 threads well, so a 32-core job
-typically sits near ~12 cores. Do not treat CPU percent as the score;
-compare wall-clock time.
+The default is now `THREADS_PER_WORKER=1` (one worker per CPU). This was
+timed on an 8-CPU node against the previous default of 8 (measurements
+below; `--ncpus 8`, a short test sequence, `num_seeds` sized to fill all
+workers):
 
-Until a new default is chosen, pass the thread count explicitly:
+| `THREADS_PER_WORKER` | Workers | Peak CPU used (of 8) | Wall-clock |
+|---|---|---|---|
+| 8 (old default) | 1 | ~0.5-0.7 cores (~7%) | -- |
+| 2 | 4 | ~4.2 cores (~53%) | 3m37s |
+| 1 (new default) | 8 | ~8.5 cores (100%+) | 2m23s (4 workers) |
+
+JAX/AlphaFold on CPU does not use multiple threads within one worker well;
+it scales by worker *count*, not threads per worker. `THREADS_PER_WORKER=8`
+(one big worker) left most requested CPUs idle. `=1` and `=2` reached
+similar peak CPU%, but `=1` also finished faster, so it is now the default.
+Do not treat CPU percent alone as the score -- compare wall-clock time when
+tuning further for a given node/sequence.
+
+If RAM is tight, raise `THREADS_PER_WORKER` back up to shrink worker count
+(see "Shared model weights" below -- memory scales with worker count, not
+CPU count):
 
 ```text
-# first test (16 workers on 32 CPUs)
 -e THREADS_PER_WORKER=2
-
-# if RAM is fine and CPU is still low (32 workers)
--e THREADS_PER_WORKER=1
+-e THREADS_PER_WORKER=8   # back to one worker per container
 ```
 
 Seeds are split exactly. No worker is given `ceil(NUM_SEEDS / NUM_WORKERS)`
@@ -290,9 +302,6 @@ if that would overshoot. For 300 seeds and 32 workers:
 total = 300 seeds
 × models_per_seed 5 = 1500 models
 ```
-
-Existing Docker images keep the old 8-thread default unless
-`THREADS_PER_WORKER` is set. Rebuild after merging to main.
 
 Each worker writes its results into:
 
@@ -345,6 +354,36 @@ redundant lookups and a common cause of rate-limiting. A rerun reuses an
 existing `msa/*.a3m` and skips the lookup entirely. ColabFold builds without
 `--msa-only` fall back to a single 1-seed/1-model pass, which yields the same
 `.a3m`.
+
+### Shared model weights and memory sizing
+
+Unlike the MSA, AlphaFold's model weights are **not** shared across workers.
+Each worker is an independent `colabfold_batch` process that loads its own
+copy of the weights (and the JAX runtime) into its own memory. This has two
+consequences:
+
+**A cold-cache download race.** If `NUM_WORKERS > 1` and the on-disk weights
+cache is empty, multiple workers race to populate the same cache file
+simultaneously; a worker that reads while another is still writing can see a
+truncated file and fail with `zipfile.BadZipFile: File is not a zip file`.
+To avoid this, the entrypoint now runs one quick sequential single-model pass
+to fully populate the cache *before* spawning any parallel workers:
+
+```text
+[WEIGHTS] priming model cache sequentially (avoids parallel-download race)
+```
+
+This mirrors the existing shared-MSA fix above and adds a small fixed cost
+per run (dominated by the one-time weights download; cached reruns are
+fast).
+
+**Memory scales with worker count, not with `--ncpus`.** Each worker's
+resident memory includes its own full copy of the loaded weights.
+Measured on an 8-CPU node with a short test sequence: 8 workers
+(`THREADS_PER_WORKER=1`) peaked near **33GB** resident (`MaxRSS`), and a
+`--mem=16G` job of the same shape was OOM-killed. Longer sequences will use
+more. Budget roughly **`--mem >= 4 * NUM_WORKERS` GB** as a floor, not the
+CPU count -- `--ncpus` alone says nothing about the memory a run will need.
 
 ### Worker failures
 
@@ -862,7 +901,7 @@ The JSON/cluster entrypoint supports the following environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `THREADS_PER_WORKER` | 8 | CPU threads per ColabFold worker. Keep 8 until `2` then `1` are timed; pass `-e THREADS_PER_WORKER=2` (or `1`) for those tests. Clamped down if it exceeds the usable CPU count. |
+| `THREADS_PER_WORKER` | 1 | CPU threads per ColabFold worker (see [§5](#5-parallel-execution) for measurements). Raise to `2` or `8` to shrink worker count if memory-constrained. Clamped down if it exceeds the usable CPU count. |
 | `COLABFOLD_BIN` | `colabfold_batch` | ColabFold executable used for both the shared-MSA pass and the workers. |
 | `ROSETTA_BIN` | image-provided path (`/opt/rosetta-bin` in the Dockerfile) | Path to Rosetta `per_residue_solvent_exposure`. |
 | `NC_METHOD` | `cone` | Rosetta neighbor-count method. May be `cone` or `sphere`. |

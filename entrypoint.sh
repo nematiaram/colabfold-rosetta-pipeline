@@ -13,9 +13,16 @@ Required:
   --ncpus     CPUs available to this container instance.
 
 Optional env:
-  THREADS_PER_WORKER      ColabFold worker threads (default: 8).
-                          For CPU tests, try 2 then 1. Seeds are split
-                          exactly across workers (no ceil overflow).
+  THREADS_PER_WORKER      ColabFold worker threads (default: 1).
+                          Measured on an 8-CPU node: THREADS_PER_WORKER=8
+                          (1 worker) used ~0.5 of 8 requested cores;
+                          =2 (4 workers) and =1 (8 workers) both used
+                          ~4-8.5 of 8 cores, with =1 also completing
+                          fastest. Seeds are split exactly across workers
+                          (no ceil overflow). Each worker is an independent
+                          process with its own copy of the AlphaFold
+                          weights in memory (~4GB+/worker observed); size
+                          --mem accordingly, not just --ncpus.
   COLABFOLD_BIN           ColabFold executable (default: colabfold_batch).
   ROSETTA_BIN             per_residue_solvent_exposure binary.
   NC_METHOD               Rosetta NC method: cone or sphere (default: cone).
@@ -43,8 +50,9 @@ fi
 COLABFOLD_BIN="${COLABFOLD_BIN:-colabfold_batch}"
 ROSETTA_BIN="${ROSETTA_BIN:-/opt/conda/bin/per_residue_solvent_exposure.linuxgccrelease}"
 SCRIPTS_DIR="/opt/pipeline/pipeline_steps"
-# Keep 8 until THREADS_PER_WORKER=2 and =1 are timed on a 32-core node.
-THREADS_PER_WORKER="${THREADS_PER_WORKER:-8}"
+# Timed on an 8-CPU node: default 8 (1 worker) used ~0.5 of 8 cores; =2 and
+# =1 both used ~4-8.5 of 8 cores, with =1 completing fastest. Default to 1.
+THREADS_PER_WORKER="${THREADS_PER_WORKER:-1}"
 NC_METHOD="${NC_METHOD:-cone}"
 PAIRWISE_THRESHOLD="${PAIRWISE_THRESHOLD:-5}"
 RUN_LEGACY_DECISION="${RUN_LEGACY_DECISION:-0}"
@@ -113,6 +121,12 @@ echo "HOST=$(hostname) NCPUS=${NCPUS} THREADS_PER_WORKER=${THREADS_PER_WORKER} N
 echo "UNIPROT=${UNIPROT} NUM_SEEDS=${NUM_SEEDS} MODELS_PER_SEED=${MODELS_PER_SEED} NC_METHOD=${NC_METHOD}"
 echo "SEED_SPLIT BASE=${BASE_SEEDS} REMAINDER=${REMAINDER} (first ${REMAINDER} workers get BASE+1)"
 echo "ALLOWED_CPUS=${ALLOWED_CPUS[*]}"
+# Each worker is a separate process that loads its own copy of the AlphaFold
+# weights + JAX runtime; unlike the MSA below, this is not shared across
+# workers. Measured ~4GB+ resident per worker on a short test sequence
+# (longer sequences will need more) -- observed 8 workers peak near 33GB.
+echo "NOTE: ${NUM_WORKERS} workers each hold their own copy of the AlphaFold weights (not shared)."
+echo "      Budget --mem well above --ncpus alone would suggest; ~4GB/worker was the observed floor."
 
 export JAX_PLATFORMS=cpu
 export CUDA_VISIBLE_DEVICES=""
@@ -145,6 +159,24 @@ if [[ -n "$A3M" ]]; then
  echo "[MSA] workers reuse ${A3M} (0 per-worker MSA queries)"
 else
  echo "[MSA] WARNING: no a3m produced; each worker will build its own MSA." >&2
+fi
+
+# Unlike the MSA above, AlphaFold model-weight loading is per-process: each
+# worker's colabfold_batch independently downloads/reads the weights file
+# into the shared on-disk cache. On a cold cache, NUM_WORKERS>1 processes
+# race on that file and a loser can read a partially-written copy
+# (zipfile.BadZipFile: File is not a zip file), failing that worker's seed.
+# One quick sequential single-model pass forces the cache to be fully
+# populated before any worker starts, the same way the MSA is pre-built.
+if [[ "$NUM_WORKERS" -gt 1 ]]; then
+ WEIGHTS_PRIME_DIR="${WORK_DIR}/.weights_prime"
+ mkdir -p "$WEIGHTS_PRIME_DIR"
+ echo "[WEIGHTS] priming model cache sequentially (avoids parallel-download race)"
+ if ! "$COLABFOLD_BIN" --num-seeds 1 --num-models 1 "$WORKER_INPUT" "$WEIGHTS_PRIME_DIR" \
+   > "${WEIGHTS_PRIME_DIR}/prime.log" 2>&1; then
+  echo "WARNING: weights priming failed; workers may still race on a cold cache." >&2
+  tail -n 15 "${WEIGHTS_PRIME_DIR}/prime.log" >&2 || true
+ fi
 fi
 
 pids=()
