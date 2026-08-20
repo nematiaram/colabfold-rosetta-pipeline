@@ -1,6 +1,11 @@
 ARG COLABFOLD_IMAGE=ghcr.io/sokrypton/colabfold:1.5.3-cuda12.2.2
 FROM ${COLABFOLD_IMAGE}
 
+# Bake AlphaFold/ColabFold weights into the image so workers skip cold-cache
+# download (and so WEIGHTS priming is unnecessary when /cache is not over-mounted empty).
+RUN set -eux; \
+    /usr/local/envs/colabfold/bin/python -m colabfold.download
+
 ENV DEBIAN_FRONTEND=noninteractive
 ENV MPLBACKEND=Agg
 

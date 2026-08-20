@@ -23,7 +23,11 @@ def parse_args():
                    help="Working directory; all outputs are written here.")
     p.add_argument("--input", required=True, type=Path, help="JSON job file.")
     p.add_argument("--ncpus", required=True, type=int,
-                   help="CPUs available to this container instance.")
+                   help="CPUs available to this container (used for pinning and "
+                        "default worker count).")
+    p.add_argument("--num-workers", type=int, default=None,
+                   help="Parallel ColabFold workers. Default: --ncpus // THREADS_PER_WORKER "
+                        "(or NUM_WORKERS env if set).")
     return p.parse_args()
 
 
@@ -53,83 +57,53 @@ def load_env_file(path):
 
 
 def usable_cpus(ncpus):
-    """Honor --ncpus for worker count. Pin when we safely can; never shrink ncpus."""
-    try:
-        allowed = sorted(os.sched_getaffinity(0))
-    except (AttributeError, OSError):
-        allowed = []
+    """Return (cpu_ids_for_pinning, ncpus, pin).
 
-    pin = shutil.which("taskset") is not None
-    if not pin:
+    Honor --ncpus for worker count: never clamp it down based on affinity.
+    Pin with taskset when possible using a window of cores from the process
+    affinity mask (first --ncpus ids). If the mask is smaller than --ncpus,
+    still keep ncpus as requested and disable pinning so taskset cannot fail
+    with "Invalid argument".
+    """
+    try:
+        affinity = sorted(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        affinity = []
+
+    if shutil.which("taskset") is None:
         print("WARNING: taskset not found; workers will not be pinned.",
               file=sys.stderr)
         return list(range(ncpus)), ncpus, False
 
-    if not allowed:
+    if not affinity:
         print("WARNING: could not read CPU affinity; pinning to 0-%d."
               % (ncpus - 1), file=sys.stderr)
         return list(range(ncpus)), ncpus, True
 
-    # Prefer a contiguous window inside the real affinity mask.
-    # Do NOT reduce ncpus — operator request wins for NUM_WORKERS.
-    if len(allowed) >= ncpus:
-        cores = allowed[:ncpus]
-    else:
-        print("WARNING: affinity has %d CPUs but --ncpus=%d; "
-              "launching %d workers anyway (pinning to available cores only)."
-              % (len(allowed), ncpus, ncpus), file=sys.stderr)
-        cores = allowed  # pin what we can; extras run unpinned or share
+    if len(affinity) < ncpus:
+        print("WARNING: affinity has only %d CPUs but --ncpus=%d; launching "
+              "%d workers as requested (pinning disabled)."
+              % (len(affinity), ncpus, ncpus), file=sys.stderr)
+        return list(range(ncpus)), ncpus, False
 
+    cores = affinity[:ncpus]
+    if len(affinity) > ncpus:
+        print("NOTE: affinity has %d CPUs; pinning %d workers to: %s"
+              % (len(affinity), ncpus, " ".join(map(str, cores))),
+              file=sys.stderr)
     return cores, ncpus, True
 
 
-def read_cgroup_memory_limit_bytes():
-    """Best-effort read of this job's cgroup memory limit in bytes, or None.
-
-    Each ColabFold worker holds its own full copy of the AlphaFold weights (not
-    shared -- see "Shared model weights and memory sizing" in the README), so
-    memory, not CPU, is what actually caps how many workers can run at once.
-    Requesting many CPUs without matching --mem produces exactly the failure
-    mode that looks like "the CPUs aren't being used": workers get OOM-killed
-    mid-run and CPU usage collapses as a symptom.
-
-    This is unreliable under rootless podman without a systemd user session
-    (no dbus to delegate a per-container memory cgroup): the container's own
-    memory.max then reads "unlimited" even though an ancestor cgroup (e.g.
-    SLURM's, from --mem) is the thing actually enforcing and killing on OOM,
-    invisible from inside the container's own cgroup namespace. Prefer the
-    explicit MEM_LIMIT_GB env var over this when the deployment can set it.
-    """
-    v2 = Path("/sys/fs/cgroup/memory.max")
+def weights_cache_ready():
+    """True if ColabFold params look already present under XDG_CACHE_HOME."""
+    cache_home = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
+    params = cache_home / "colabfold" / "params"
+    if (params / "download_finished.txt").is_file():
+        return True
     try:
-        if v2.is_file():
-            raw = v2.read_text().strip()
-            if raw != "max":
-                return int(raw)
-            return None
-    except (OSError, ValueError):
-        pass
-
-    v1 = Path("/sys/fs/cgroup/memory/memory.limit_in_bytes")
-    try:
-        if v1.is_file():
-            val = int(v1.read_text().strip())
-            # cgroup v1 reports a huge sentinel (near 2**63, arch-dependent)
-            # instead of "unlimited"; treat anything absurd as "no real limit".
-            if val < (1 << 62):
-                return val
-    except (OSError, ValueError):
-        pass
-
-    return None
-
-
-def max_workers_for_memory(mem_limit_bytes, mem_per_worker_gb, reserve_gb=2.0):
-    """Cap worker count so NUM_WORKERS copies of the weights fit in the cgroup limit."""
-    usable_gb = mem_limit_bytes / 1e9 - reserve_gb
-    if usable_gb <= 0:
-        return 1
-    return max(1, int(usable_gb // mem_per_worker_gb))
+        return params.is_dir() and any(params.iterdir())
+    except OSError:
+        return False
 
 
 def build_shared_msa(colabfold_bin, fasta, msa_dir, env=None):
@@ -231,58 +205,32 @@ def consolidate(pred_dir):
 
 
 def run_colabfold(work_dir, pred_dir, fasta, uniprot, num_seeds, models_per_seed,
-                  ncpus, threads_per_worker, colabfold_bin, mem_per_worker_gb=4.0,
-                  mem_limit_gb=None):
+                  ncpus, threads_per_worker, colabfold_bin, num_workers=None):
+    """Launch ColabFold workers using operator-provided knobs only.
+
+    Worker count is not auto-capped by memory or affinity. The operator sets:
+      --ncpus, --num-workers (or NUM_WORKERS / THREADS_PER_WORKER), and
+      models_per_seed / num_seeds in the job JSON.
+    """
     allowed, ncpus, pin = usable_cpus(ncpus)
 
-    if threads_per_worker > ncpus:
-        print("WARNING: THREADS_PER_WORKER %d exceeds the %d usable CPUs; clamping to %d."
-              % (threads_per_worker, ncpus, ncpus), file=sys.stderr)
-        threads_per_worker = ncpus
-
-    num_workers = max(1, ncpus // threads_per_worker)
-
-    if mem_limit_gb is not None:
-        mem_limit = mem_limit_gb * 1e9
-        mem_source = "MEM_LIMIT_GB=%.0f (explicit)" % mem_limit_gb
-    else:
-        mem_limit = read_cgroup_memory_limit_bytes()
-        mem_source = "cgroup memory.max (auto-detected)"
-
-    if mem_limit is not None:
-        mem_cap = max_workers_for_memory(mem_limit, mem_per_worker_gb)
-        if mem_cap < num_workers:
-            print("WARNING: %d CPU-based workers would need roughly %.0fGB "
-                  "(%.0fGB memory limit via %s, ~%.1fGB/worker assumed for "
-                  "the AlphaFold weights each worker loads); clamping to %d "
-                  "workers to avoid an OOM kill mid-run. Raise MEM_PER_WORKER_GB "
-                  "if your sequence needs less, or request more memory."
-                  % (num_workers, num_workers * mem_per_worker_gb,
-                     mem_limit / 1e9, mem_source, mem_per_worker_gb, mem_cap),
-                  file=sys.stderr)
-            num_workers = mem_cap
-    else:
-        print("NOTE: no memory limit available (cgroup auto-detection failed and "
-              "MEM_LIMIT_GB was not set -- this is expected under rootless podman "
-              "without a systemd user session, where the container's own cgroup "
-              "reports 'unlimited' even though an ancestor cgroup enforces the "
-              "real --mem and will OOM-kill workers). Skipping the memory-based "
-              "worker cap. Each worker holds its own copy of the AlphaFold "
-              "weights (~%.1fGB/worker assumed); set MEM_LIMIT_GB to the memory "
-              "actually available to this container to enable the cap."
-              % mem_per_worker_gb, file=sys.stderr)
+    if num_workers is None:
+        num_workers = max(1, ncpus // threads_per_worker)
+    if num_workers < 1:
+        raise SystemExit("ERROR: --num-workers / NUM_WORKERS must be >= 1")
 
     per_worker = split_seeds(num_seeds, num_workers)
 
-    print("HOST=%s NCPUS=%d THREADS_PER_WORKER=%d NUM_WORKERS=%d"
-          % (socket.gethostname(), ncpus, threads_per_worker, num_workers), flush=True)
-    print("ALLOWED_CPUS=%s" % " ".join(map(str, allowed)), flush=True)
+    print("HOST=%s NCPUS=%d THREADS_PER_WORKER=%d NUM_WORKERS=%d MODELS_PER_SEED=%d NUM_SEEDS=%d"
+          % (socket.gethostname(), ncpus, threads_per_worker, num_workers,
+             models_per_seed, num_seeds), flush=True)
+    print("ALLOWED_CPUS=%s pin=%s" % (" ".join(map(str, allowed)), pin), flush=True)
     print("SEED_SPLIT %s" % " ".join("w%d=%d" % (i, n) for i, n in enumerate(per_worker)),
           flush=True)
     print("NOTE: %d workers each hold their own copy of the AlphaFold weights (not shared)."
           % num_workers, flush=True)
-    print("      Budget --mem well above --ncpus alone would suggest; "
-          "~4GB/worker was the observed floor.", flush=True)
+    print("      Size --mem for ~4GB x NUM_WORKERS (operator-controlled; no auto-cap).",
+          flush=True)
 
     env = os.environ.copy()
     env.update({
@@ -306,8 +254,15 @@ def run_colabfold(work_dir, pred_dir, fasta, uniprot, num_seeds, models_per_seed
     msa_a3m = build_shared_msa(colabfold_bin, fasta, work_dir / "msa", env=env)
     worker_input = msa_a3m if msa_a3m is not None else fasta
 
+    skip_prime = os.environ.get("SKIP_WEIGHTS_PRIME", "").strip().lower() in (
+        "1", "true", "yes",
+    )
     if num_workers > 1:
-        prime_weights_cache(colabfold_bin, worker_input, work_dir, env)
+        if skip_prime or weights_cache_ready():
+            print("[WEIGHTS] skipping prime (cache ready or SKIP_WEIGHTS_PRIME set)",
+                  flush=True)
+        else:
+            prime_weights_cache(colabfold_bin, worker_input, work_dir, env)
 
     processes = []
     start_seed = 0
@@ -397,19 +352,22 @@ def main():
     rosetta_bin = os.environ.get(
         "ROSETTA_BIN", "/opt/conda/bin/per_residue_solvent_exposure.linuxgccrelease")
     threads_per_worker = int(os.environ.get("THREADS_PER_WORKER", "1"))
-    mem_per_worker_gb = float(os.environ.get("MEM_PER_WORKER_GB", "4"))
-    mem_limit_gb_raw = os.environ.get("MEM_LIMIT_GB", "").strip()
-    mem_limit_gb = float(mem_limit_gb_raw) if mem_limit_gb_raw else None
     nc_method = os.environ.get("NC_METHOD", "cone")
     pairwise_threshold = os.environ.get("PAIRWISE_THRESHOLD", "5")
     run_legacy_decision = os.environ.get("RUN_LEGACY_DECISION", "0") == "1"
 
     if threads_per_worker < 1:
         raise SystemExit("ERROR: THREADS_PER_WORKER must be >= 1")
-    if mem_per_worker_gb <= 0:
-        raise SystemExit("ERROR: MEM_PER_WORKER_GB must be > 0")
-    if mem_limit_gb is not None and mem_limit_gb <= 0:
-        raise SystemExit("ERROR: MEM_LIMIT_GB must be > 0")
+
+    # Operator knobs for parallelism (no auto memory/affinity caps):
+    #   --num-workers  >  NUM_WORKERS env  >  --ncpus // THREADS_PER_WORKER
+    num_workers = args.num_workers
+    if num_workers is None:
+        env_workers = os.environ.get("NUM_WORKERS", "").strip()
+        if env_workers:
+            num_workers = int(env_workers)
+    if num_workers is not None and num_workers < 1:
+        raise SystemExit("ERROR: --num-workers / NUM_WORKERS must be >= 1")
 
     work_dir.mkdir(parents=True, exist_ok=True)
     fasta = work_dir / "input.fasta"
@@ -439,7 +397,7 @@ def main():
 
     run_colabfold(work_dir, pred_dir, fasta, uniprot, num_seeds, models_per_seed,
                   args.ncpus, threads_per_worker, colabfold_bin,
-                  mem_per_worker_gb=mem_per_worker_gb, mem_limit_gb=mem_limit_gb)
+                  num_workers=num_workers)
 
     run([sys.executable, SCRIPTS_DIR / "02_plddt_rmsd_kmeans.py",
          "--uniprot", uniprot, "--pred-dir", pred_dir, "--out-dir", analysis_dir])
