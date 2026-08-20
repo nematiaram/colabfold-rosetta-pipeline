@@ -182,6 +182,12 @@ def main():
             rows.append((parts[idx_rep], parts[idx_pdb]))
 
     db = os.environ.get("ROSETTA3_DB") or os.environ.get("ROSETTA_DATABASE")
+
+    # The representatives are independent structures with separate output files,
+    # so run them concurrently instead of blocking on one Rosetta process at a
+    # time -- each per_residue_solvent_exposure call is single-threaded, and a
+    # sequential loop here leaves all but one core idle for this whole step.
+    procs = []
     for rep_id, pdb_path in rows:
         base = f"{args.uniprot}_{rep_id}"
         out_path = out_dir / f"{base}_neighbor_count_{args.method}.out"
@@ -196,7 +202,16 @@ def main():
         if db:
             cmd[1:1] = ["-database", db]
         print("[RUN] " + " ".join(cmd))
-        subprocess.run(cmd, check=True)
+        procs.append((rep_id, cmd, subprocess.Popen(cmd)))
+
+    failed = []
+    for rep_id, cmd, proc in procs:
+        rc = proc.wait()
+        if rc != 0:
+            failed.append((rep_id, cmd, rc))
+    if failed:
+        rep_id, cmd, rc = failed[0]
+        raise subprocess.CalledProcessError(rc, cmd)
 
     nc_path = merge_nc(args.uniprot, out_dir, args.method, default_chain=args.default_chain)
     print(f"[DONE] method={args.method}  merged={nc_path}")
