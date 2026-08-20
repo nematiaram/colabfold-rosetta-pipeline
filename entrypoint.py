@@ -57,40 +57,33 @@ def load_env_file(path):
 
 
 def usable_cpus(ncpus):
-    """Return (cpu_ids_for_pinning, ncpus, pin).
-
-    Honor --ncpus for worker count: never clamp it down based on affinity.
-    Pin with taskset when possible using a window of cores from the process
-    affinity mask (first --ncpus ids). If the mask is smaller than --ncpus,
-    still keep ncpus as requested and disable pinning so taskset cannot fail
-    with "Invalid argument".
-    """
+    """Honor --ncpus for worker count. Pin when we safely can; never shrink ncpus."""
     try:
-        affinity = sorted(os.sched_getaffinity(0))
+        allowed = sorted(os.sched_getaffinity(0))
     except (AttributeError, OSError):
-        affinity = []
+        allowed = []
 
-    if shutil.which("taskset") is None:
+    pin = shutil.which("taskset") is not None
+    if not pin:
         print("WARNING: taskset not found; workers will not be pinned.",
               file=sys.stderr)
         return list(range(ncpus)), ncpus, False
 
-    if not affinity:
+    if not allowed:
         print("WARNING: could not read CPU affinity; pinning to 0-%d."
               % (ncpus - 1), file=sys.stderr)
         return list(range(ncpus)), ncpus, True
 
-    if len(affinity) < ncpus:
-        print("WARNING: affinity has only %d CPUs but --ncpus=%d; launching "
-              "%d workers as requested (pinning disabled)."
-              % (len(affinity), ncpus, ncpus), file=sys.stderr)
-        return list(range(ncpus)), ncpus, False
+    # Prefer a contiguous window inside the real affinity mask.
+    # Do NOT reduce ncpus — operator request wins for NUM_WORKERS.
+    if len(allowed) >= ncpus:
+        cores = allowed[:ncpus]
+    else:
+        print("WARNING: affinity has %d CPUs but --ncpus=%d; "
+              "launching %d workers anyway (pinning to available cores only)."
+              % (len(allowed), ncpus, ncpus), file=sys.stderr)
+        cores = allowed  # pin what we can; extras run unpinned or share
 
-    cores = affinity[:ncpus]
-    if len(affinity) > ncpus:
-        print("NOTE: affinity has %d CPUs; pinning %d workers to: %s"
-              % (len(affinity), ncpus, " ".join(map(str, cores))),
-              file=sys.stderr)
     return cores, ncpus, True
 
 
