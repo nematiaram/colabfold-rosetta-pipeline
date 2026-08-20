@@ -95,6 +95,55 @@ def usable_cpus(ncpus):
     return allowed, ncpus, pin
 
 
+def read_cgroup_memory_limit_bytes():
+    """Best-effort read of this job's cgroup memory limit in bytes, or None.
+
+    Each ColabFold worker holds its own full copy of the AlphaFold weights (not
+    shared -- see "Shared model weights and memory sizing" in the README), so
+    memory, not CPU, is what actually caps how many workers can run at once.
+    Requesting many CPUs without matching --mem produces exactly the failure
+    mode that looks like "the CPUs aren't being used": workers get OOM-killed
+    mid-run and CPU usage collapses as a symptom.
+
+    This is unreliable under rootless podman without a systemd user session
+    (no dbus to delegate a per-container memory cgroup): the container's own
+    memory.max then reads "unlimited" even though an ancestor cgroup (e.g.
+    SLURM's, from --mem) is the thing actually enforcing and killing on OOM,
+    invisible from inside the container's own cgroup namespace. Prefer the
+    explicit MEM_LIMIT_GB env var over this when the deployment can set it.
+    """
+    v2 = Path("/sys/fs/cgroup/memory.max")
+    try:
+        if v2.is_file():
+            raw = v2.read_text().strip()
+            if raw != "max":
+                return int(raw)
+            return None
+    except (OSError, ValueError):
+        pass
+
+    v1 = Path("/sys/fs/cgroup/memory/memory.limit_in_bytes")
+    try:
+        if v1.is_file():
+            val = int(v1.read_text().strip())
+            # cgroup v1 reports a huge sentinel (near 2**63, arch-dependent)
+            # instead of "unlimited"; treat anything absurd as "no real limit".
+            if val < (1 << 62):
+                return val
+    except (OSError, ValueError):
+        pass
+
+    return None
+
+
+def max_workers_for_memory(mem_limit_bytes, mem_per_worker_gb, reserve_gb=2.0):
+    """Cap worker count so NUM_WORKERS copies of the weights fit in the cgroup limit."""
+    usable_gb = mem_limit_bytes / 1e9 - reserve_gb
+    if usable_gb <= 0:
+        return 1
+    return max(1, int(usable_gb // mem_per_worker_gb))
+
+
 def build_shared_msa(colabfold_bin, fasta, msa_dir, env=None):
     """Build the MSA once and return the .a3m, or None.
 
@@ -165,7 +214,8 @@ def consolidate(pred_dir):
 
 
 def run_colabfold(work_dir, pred_dir, fasta, uniprot, num_seeds, models_per_seed,
-                  ncpus, threads_per_worker, colabfold_bin):
+                  ncpus, threads_per_worker, colabfold_bin, mem_per_worker_gb=4.0,
+                  mem_limit_gb=None):
     allowed, ncpus, pin = usable_cpus(ncpus)
 
     if threads_per_worker > ncpus:
@@ -174,6 +224,37 @@ def run_colabfold(work_dir, pred_dir, fasta, uniprot, num_seeds, models_per_seed
         threads_per_worker = ncpus
 
     num_workers = max(1, ncpus // threads_per_worker)
+
+    if mem_limit_gb is not None:
+        mem_limit = mem_limit_gb * 1e9
+        mem_source = "MEM_LIMIT_GB=%.0f (explicit)" % mem_limit_gb
+    else:
+        mem_limit = read_cgroup_memory_limit_bytes()
+        mem_source = "cgroup memory.max (auto-detected)"
+
+    if mem_limit is not None:
+        mem_cap = max_workers_for_memory(mem_limit, mem_per_worker_gb)
+        if mem_cap < num_workers:
+            print("WARNING: %d CPU-based workers would need roughly %.0fGB "
+                  "(%.0fGB memory limit via %s, ~%.1fGB/worker assumed for "
+                  "the AlphaFold weights each worker loads); clamping to %d "
+                  "workers to avoid an OOM kill mid-run. Raise MEM_PER_WORKER_GB "
+                  "if your sequence needs less, or request more memory."
+                  % (num_workers, num_workers * mem_per_worker_gb,
+                     mem_limit / 1e9, mem_source, mem_per_worker_gb, mem_cap),
+                  file=sys.stderr)
+            num_workers = mem_cap
+    else:
+        print("NOTE: no memory limit available (cgroup auto-detection failed and "
+              "MEM_LIMIT_GB was not set -- this is expected under rootless podman "
+              "without a systemd user session, where the container's own cgroup "
+              "reports 'unlimited' even though an ancestor cgroup enforces the "
+              "real --mem and will OOM-kill workers). Skipping the memory-based "
+              "worker cap. Each worker holds its own copy of the AlphaFold "
+              "weights (~%.1fGB/worker assumed); set MEM_LIMIT_GB to the memory "
+              "actually available to this container to enable the cap."
+              % mem_per_worker_gb, file=sys.stderr)
+
     per_worker = split_seeds(num_seeds, num_workers)
 
     print("HOST=%s NCPUS=%d THREADS_PER_WORKER=%d NUM_WORKERS=%d"
@@ -292,12 +373,19 @@ def main():
     rosetta_bin = os.environ.get(
         "ROSETTA_BIN", "/opt/conda/bin/per_residue_solvent_exposure.linuxgccrelease")
     threads_per_worker = int(os.environ.get("THREADS_PER_WORKER", "1"))
+    mem_per_worker_gb = float(os.environ.get("MEM_PER_WORKER_GB", "4"))
+    mem_limit_gb_raw = os.environ.get("MEM_LIMIT_GB", "").strip()
+    mem_limit_gb = float(mem_limit_gb_raw) if mem_limit_gb_raw else None
     nc_method = os.environ.get("NC_METHOD", "cone")
     pairwise_threshold = os.environ.get("PAIRWISE_THRESHOLD", "5")
     run_legacy_decision = os.environ.get("RUN_LEGACY_DECISION", "0") == "1"
 
     if threads_per_worker < 1:
         raise SystemExit("ERROR: THREADS_PER_WORKER must be >= 1")
+    if mem_per_worker_gb <= 0:
+        raise SystemExit("ERROR: MEM_PER_WORKER_GB must be > 0")
+    if mem_limit_gb is not None and mem_limit_gb <= 0:
+        raise SystemExit("ERROR: MEM_LIMIT_GB must be > 0")
 
     work_dir.mkdir(parents=True, exist_ok=True)
     fasta = work_dir / "input.fasta"
@@ -326,7 +414,8 @@ def main():
           % (uniprot, num_seeds, models_per_seed, nc_method), flush=True)
 
     run_colabfold(work_dir, pred_dir, fasta, uniprot, num_seeds, models_per_seed,
-                  args.ncpus, threads_per_worker, colabfold_bin)
+                  args.ncpus, threads_per_worker, colabfold_bin,
+                  mem_per_worker_gb=mem_per_worker_gb, mem_limit_gb=mem_limit_gb)
 
     run([sys.executable, SCRIPTS_DIR / "02_plddt_rmsd_kmeans.py",
          "--uniprot", uniprot, "--pred-dir", pred_dir, "--out-dir", analysis_dir])
