@@ -332,6 +332,46 @@ ALLOWED_CPUS=40 41 42 43 44 45 46 47 48 49 50 51
 If `--ncpus` is larger than that set, it is clamped with a warning instead of
 failing. If `taskset` is unavailable, workers run unpinned.
 
+### Memory allocation
+
+Each ColabFold worker holds its own full copy of the AlphaFold weights (not
+shared, unlike the MSA). Requesting many CPUs without matching memory produces
+a failure mode that looks like a CPU problem but isn't: workers get OOM-killed
+mid-run, and CPU usage collapses as a symptom right as the run appears to be
+scaling. `NUM_WORKERS` is therefore also capped by memory, using
+`MEM_PER_WORKER_GB` (default `4`) against a detected or declared memory limit:
+
+```text
+WARNING: 32 CPU-based workers would need roughly 128GB (64GB memory limit via
+MEM_LIMIT_GB=64 (explicit), ~4.0GB/worker assumed ...); clamping to 15 workers
+to avoid an OOM kill mid-run.
+```
+
+The memory limit itself comes from, in order:
+
+1. **`MEM_LIMIT_GB`**, if set -- an explicit statement of how much memory this
+   container actually has, matching whatever was passed to `--mem`/`--memory`.
+   Set this explicitly; auto-detection is unreliable in practice. In
+   particular, **rootless podman without a systemd user session** (no `dbus`
+   to delegate a per-container memory cgroup -- the common case on shared
+   HPC compute nodes, visible as `Failed to add pause process to systemd
+   sandbox cgroup: ... bus: connect: no such file or directory` in build/run
+   logs) reports the container's own `memory.max` as "unlimited" even though
+   an ancestor cgroup (e.g. SLURM's, from `--mem`) is the thing actually
+   enforcing and killing on OOM. `MEM_LIMIT_GB` sidesteps this entirely.
+2. Otherwise, a best-effort read of the container's own cgroup v2
+   (`/sys/fs/cgroup/memory.max`) or v1 (`.../memory.limit_in_bytes`) limit.
+   Works in plain Docker and most Kubernetes deployments; not reliable under
+   the rootless-podman-without-dbus case above.
+3. If neither is available, the memory-based cap is skipped entirely (a NOTE
+   is printed) and only the CPU-based worker count applies, same as before
+   this cap existed.
+
+`MEM_PER_WORKER_GB` is a rough, sequence-length-dependent estimate -- raise it
+for longer target sequences (more memory per worker) or lower it if a short
+sequence's real footprint is well under 4GB (observed as low as ~2GB/worker
+for a 24-residue test peptide).
+
 ### Shared MSA
 
 The MSA is built once, before the workers start, and every worker is handed the
@@ -866,6 +906,8 @@ The JSON/cluster entrypoint supports the following environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `THREADS_PER_WORKER` | 1 | CPU threads per ColabFold worker. Default 1 so `--ncpus` is filled with independent seed jobs. Raise to 2 or 8 if RAM is the limit. Clamped down if it exceeds the usable CPU count. |
+| `MEM_PER_WORKER_GB` | 4 | Assumed memory footprint per worker (AlphaFold weights), used to cap `NUM_WORKERS` so it doesn't OOM. See [Memory allocation](#5-parallel-execution). |
+| `MEM_LIMIT_GB` | unset | Explicit memory limit for this container, matching `--mem`/`--memory`. Strongly recommended -- cgroup auto-detection is unreliable under rootless podman without a systemd session. |
 | `COLABFOLD_BIN` | `colabfold_batch` | ColabFold executable used for both the shared-MSA pass and the workers. |
 | `ROSETTA_BIN` | image-provided path (`/opt/rosetta-bin` in the Dockerfile) | Path to Rosetta `per_residue_solvent_exposure`. |
 | `NC_METHOD` | `cone` | Rosetta neighbor-count method. May be `cone` or `sphere`. |
