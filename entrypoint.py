@@ -53,46 +53,34 @@ def load_env_file(path):
 
 
 def usable_cpus(ncpus):
-    """Return (allowed_cpu_ids, ncpus, pin).
-
-    Never assume this job owns cores 0..ncpus-1. Two distinct situations:
-
-      * A cpuset narrower than --ncpus (SLURM, cgroup-limited containers, and
-        cpuset-constrained SGE). Pinning to 0..N-1 there fails outright with
-        "Invalid argument". Clamp to what we may use and pin to those ids.
-
-      * A cpuset wider than --ncpus (measured on UGE: a 4-slot job reports
-        affinity over all 36 cores). The cpuset does not describe this
-        allocation, so pinning to the first N cores makes every concurrent job
-        on a shared node pile onto the same low cores. Do not pin at all.
-    """
+    """Honor --ncpus for worker count. Pin when we safely can; never shrink ncpus."""
     try:
         allowed = sorted(os.sched_getaffinity(0))
     except (AttributeError, OSError):
         allowed = []
 
-    if not allowed:
-        print("WARNING: could not read CPU affinity; assuming cores 0-%d." % (ncpus - 1),
+    pin = shutil.which("taskset") is not None
+    if not pin:
+        print("WARNING: taskset not found; workers will not be pinned.",
               file=sys.stderr)
         return list(range(ncpus)), ncpus, False
 
-    if ncpus > len(allowed):
-        print("WARNING: --ncpus %d exceeds the %d CPUs this process may use; clamping to %d."
-              % (ncpus, len(allowed), len(allowed)), file=sys.stderr)
-        ncpus = len(allowed)
+    if not allowed:
+        print("WARNING: could not read CPU affinity; pinning to 0-%d."
+              % (ncpus - 1), file=sys.stderr)
+        return list(range(ncpus)), ncpus, True
 
-    pin = True
-    if shutil.which("taskset") is None:
-        print("WARNING: taskset not found; workers will not be pinned.", file=sys.stderr)
-        pin = False
-    elif len(allowed) > ncpus:
-        print("NOTE: affinity is open across %d CPUs but only %d were requested;"
-              % (len(allowed), ncpus), file=sys.stderr)
-        print("      the cpuset does not describe this allocation, so workers run", file=sys.stderr)
-        print("      unpinned to avoid colliding with other jobs on a shared node.", file=sys.stderr)
-        pin = False
+    # Prefer a contiguous window inside the real affinity mask.
+    # Do NOT reduce ncpus — operator request wins for NUM_WORKERS.
+    if len(allowed) >= ncpus:
+        cores = allowed[:ncpus]
+    else:
+        print("WARNING: affinity has %d CPUs but --ncpus=%d; "
+              "launching %d workers anyway (pinning to available cores only)."
+              % (len(allowed), ncpus, ncpus), file=sys.stderr)
+        cores = allowed  # pin what we can; extras run unpinned or share
 
-    return allowed, ncpus, pin
+    return cores, ncpus, True
 
 
 def read_cgroup_memory_limit_bytes():
