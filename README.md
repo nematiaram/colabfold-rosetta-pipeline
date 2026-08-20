@@ -294,8 +294,9 @@ total = 300 seeds
 × models_per_seed 5 = 1500 models
 ```
 
-Existing Docker images keep the old 8-thread default unless
-`THREADS_PER_WORKER` is set. Rebuild after merging to main.
+Note that efficiency is capped by `min(NCPUS/THREADS_PER_WORKER, NUM_SEEDS)`:
+a job with more requested CPUs than seeds will never spin up enough workers
+to use them all, regardless of `THREADS_PER_WORKER`.
 
 Each worker writes its results into:
 
@@ -388,6 +389,42 @@ redundant lookups and a common cause of rate-limiting. A rerun reuses an
 existing `msa/*.a3m` and skips the lookup entirely. ColabFold builds without
 `--msa-only` fall back to a single 1-seed/1-model pass, which yields the same
 `.a3m`.
+
+### Shared model weights and memory sizing
+
+Unlike the MSA, AlphaFold's model weights are **not** shared across workers.
+Each worker is an independent `colabfold_batch` process that loads its own
+copy of the weights (and the JAX runtime) into its own memory. This has two
+consequences:
+
+**A cold-cache download race.** If `NUM_WORKERS > 1` and the on-disk weights
+cache is empty, multiple workers race to populate the same cache file
+simultaneously; a worker that reads while another is still writing can see a
+truncated file and fail with `zipfile.BadZipFile: File is not a zip file`.
+`entrypoint.py` avoids this with `prime_weights_cache()`: one quick sequential
+single-model pass that fully populates the cache *before* spawning any
+parallel workers:
+
+```text
+[WEIGHTS] priming model cache sequentially (avoids parallel-download race)
+```
+
+This mirrors the shared-MSA fix above and adds a small fixed cost per run
+(dominated by the one-time weights download; cached reruns are fast).
+
+**Memory scales with worker count, not with `--ncpus`.** Each worker's
+resident memory includes its own full copy of the loaded weights. Measured on
+an 8-CPU node with a short test sequence: 8 workers (`THREADS_PER_WORKER=1`)
+peaked near **33GB** resident (`MaxRSS`), and a `--mem=16G` job of the same
+shape was OOM-killed. Longer sequences will use more. Budget roughly
+**`--mem >= 4 * NUM_WORKERS` GB** as a floor, not the CPU count --
+`--ncpus` alone says nothing about the memory a run will need. The entrypoint
+logs a reminder at startup:
+
+```text
+NOTE: 8 workers each hold their own copy of the AlphaFold weights (not shared).
+      Budget --mem well above --ncpus alone would suggest; ~4GB/worker was the observed floor.
+```
 
 ### Worker failures
 
@@ -979,12 +1016,14 @@ linked to:
 The following workflow scripts are copied into the image:
 
 - `pipeline_steps/`
-- `entrypoint.sh`
+- `entrypoint.py` (the actual `ENTRYPOINT`; see [§5](#5-parallel-execution))
+- `entrypoint.sh` (compatibility shim that execs `entrypoint.py`)
 - `run_pipeline.sh`
 - `run_from_predictions.sh`
 
-For ROSIE/shared-cluster execution, `entrypoint.sh` with `job.json` should be
-treated as the primary interface.
+For ROSIE/shared-cluster execution, `entrypoint.py` with `job.json` should be
+treated as the primary interface; `entrypoint.sh` keeps older
+`entrypoint.sh ...` invocations working.
 
 ---
 
@@ -1035,7 +1074,7 @@ The script expects:
 and skips the ColabFold-generation step before continuing with clustering,
 Rosetta NC, and pairwise analysis.
 
-The JSON `entrypoint.sh` workflow should remain the primary interface for ROSIE.
+The JSON `entrypoint.py` workflow should remain the primary interface for ROSIE.
 
 ---
 
@@ -1097,7 +1136,7 @@ and for manuscript reproduction:
   `reagent_residue_detail.tsv` / `reagent_target_counts.tsv`).
 - **The cluster entrypoint sets `--max-msa 16:32` and `--use-dropout`, but does
   not currently pin `max_recycles=1` or `alphafold2_ptm`.** If those are part of
-  the final manuscript method, they should be pinned in `entrypoint.sh`.
+  the final manuscript method, they should be pinned in `entrypoint.py`.
 - **Cone angular settings are not explicitly passed.** The script pins
   `dist_midpoint=9.0` and `dist_steepness=1.0` and uses Rosetta defaults for
   the remaining cone parameters.
