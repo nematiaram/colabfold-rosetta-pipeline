@@ -7,6 +7,8 @@ raises UnicodeEncodeError and kills the run. Files are written as UTF-8.
 """
 
 import argparse
+import json
+import math
 import os
 import shutil
 import socket
@@ -333,6 +335,93 @@ def run_colabfold(work_dir, pred_dir, fasta, uniprot, num_seeds, models_per_seed
         raise SystemExit("ERROR: no PDBs were produced.")
 
 
+def _read_tsv_records(path):
+    """Read a small TSV into a list of dicts with JSON-safe scalar values.
+
+    Deliberately dependency-free: entrypoint.py has never imported pandas, and
+    rep_info.tsv is a handful of rows.
+    """
+    records = []
+    with open(path, encoding="utf-8") as f:
+        header = f.readline().rstrip("\n").split("\t")
+        for raw in f:
+            if not raw.strip():
+                continue
+            cells = raw.rstrip("\n").split("\t")
+            row = {}
+            for key, value in zip(header, cells):
+                row[key] = _coerce_scalar(value)
+            records.append(row)
+    return records
+
+
+def _coerce_scalar(value):
+    """Best-effort TSV cell -> int/float/bool/None/str."""
+    if value is None:
+        return None
+    s = value.strip()
+    if s == "" or s.lower() in ("nan", "na", "none", "null"):
+        return None
+    lower = s.lower()
+    if lower == "true":
+        return True
+    if lower == "false":
+        return False
+    try:
+        i = int(s)
+        # Only treat as int if the string doesn't look like a float.
+        if "." not in s and "e" not in lower:
+            return i
+    except ValueError:
+        pass
+    try:
+        f = float(s)
+        if math.isnan(f) or math.isinf(f):
+            return None
+        return f
+    except ValueError:
+        pass
+    return s
+
+
+def merge_reps_into_view_json(view_json_path, rep_info_tsv):
+    """Add a "reps" section to the view.json produced by step 05.
+
+    Step 05 doesn't see step 02's rep_info.tsv, so we splice it in here where
+    both files exist. Missing inputs are logged and skipped rather than fatal:
+    the view will render its other panels either way.
+    """
+    if not view_json_path.is_file():
+        print("WARNING: %s missing; skipping rep-info merge." % view_json_path,
+              file=sys.stderr)
+        return
+    if not rep_info_tsv.is_file():
+        print("WARNING: %s missing; view.json will have no 'reps' section."
+              % rep_info_tsv, file=sys.stderr)
+        return
+
+    try:
+        payload = json.loads(view_json_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        print("WARNING: could not read %s (%s); skipping rep-info merge."
+              % (view_json_path, e), file=sys.stderr)
+        return
+
+    try:
+        payload["reps"] = _read_tsv_records(rep_info_tsv)
+    except OSError as e:
+        print("WARNING: could not read %s (%s); skipping rep-info merge."
+              % (rep_info_tsv, e), file=sys.stderr)
+        return
+
+    view_json_path.write_text(
+        json.dumps(payload, indent=2, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+    print("[VIEW] merged %d reps into %s" % (len(payload["reps"]), view_json_path),
+          flush=True)
+
+
 def main():
     args = parse_args()
     work_dir = args.workdir.resolve()
@@ -405,6 +494,11 @@ def main():
          "--nc-tsv", rosetta_out / ("%s_rosetta_nc.tsv" % uniprot),
          "--out-dir", pairwise_out, "--threshold", pairwise_threshold])
 
+    merge_reps_into_view_json(
+        view_json_path=pairwise_out / ("%s_view.json" % uniprot),
+        rep_info_tsv=analysis_dir / ("%s_rep_info.tsv" % uniprot),
+    )
+
     if run_legacy_decision:
         cmd = [sys.executable, SCRIPTS_DIR / "04_labeling_decision_pipeline_all_in_one.py",
                "--uniprot", uniprot,
@@ -419,6 +513,7 @@ def main():
     print("[DONE] Pipeline outputs in: %s" % work_dir)
     print("  rosetta/   NC (%s)" % nc_method)
     print("  pairwise/  delta-NC reporters + reagent targets (T=%s)" % pairwise_threshold)
+    print("  pairwise/%s_view.json  view-page JSON (schema v1)" % uniprot)
 
 
 if __name__ == "__main__":
