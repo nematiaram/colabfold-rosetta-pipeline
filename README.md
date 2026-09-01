@@ -764,8 +764,6 @@ The current lookup also includes:
 - OH-high
 - OH-medium
 - OH-low
-- diazirine
-- CF3
 
 The hydroxyl-radical groups are operational high-, medium-, and low-reactivity
 bins based on published intrinsic amino-acid reactivities.
@@ -778,11 +776,7 @@ OH-medium: Lys, Val, Ser, Thr, Pro, Gln, Glu
 OH-low:    Asp, Asn, Ala, Gly
 ```
 
-Diazirine and CF3 are currently mapped to all 20 standard amino acids as broad
-operational mappings for the pipeline.
-
-These mappings should not be interpreted as implying equal experimental
-reactivity for every amino acid.
+Diazirine and CF3 are **not** included in the ROSIE reagent list.
 
 ---
 
