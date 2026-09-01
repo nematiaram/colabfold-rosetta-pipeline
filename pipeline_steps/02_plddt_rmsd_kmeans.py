@@ -1,12 +1,100 @@
 #!/usr/bin/env python3
 import argparse
 import glob
-import math
+import os
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+
+# Paper methods: discard models dominated by nonregular SS (C/S/T/unassigned).
+COIL_LIKE = frozenset({"C", "S", "T", " ", "-", ""})
+
+
+def find_dssp_bin() -> str:
+    for name in ("mkdssp", "dssp"):
+        path = shutil.which(name)
+        if path:
+            return path
+    raise RuntimeError(
+        "DSSP binary not found (tried mkdssp, dssp). "
+        "Install the 'dssp' package in the image, or set --max-coil-fraction 1.0 to disable."
+    )
+
+
+def coil_fraction(pdb_path: str, dssp_bin: Optional[str] = None) -> float:
+    """Fraction of residues with coil-like / nonregular DSSP assignment.
+
+    Runs mkdssp/dssp, parses the classic DSSP STRUCTURE column (index 16), and
+    counts C, S, T, blank, and '-' as nonregular (paper methods).
+    """
+    bin_path = dssp_bin or find_dssp_bin()
+    pdb_path = str(pdb_path)
+
+    with tempfile.TemporaryDirectory(prefix="dssp_") as tmp:
+        out_path = Path(tmp) / "out.dssp"
+        # Prefer modern CLI; fall back to -i/-o for older CMBI builds.
+        attempts = [
+            [bin_path, pdb_path, str(out_path)],
+            [bin_path, "-i", pdb_path, "-o", str(out_path)],
+        ]
+        last_err = None
+        for cmd in attempts:
+            try:
+                proc = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=120, check=False
+                )
+            except (OSError, subprocess.SubprocessError) as e:
+                last_err = e
+                continue
+            if proc.returncode == 0 and out_path.is_file() and out_path.stat().st_size > 0:
+                text = out_path.read_text(encoding="utf-8", errors="replace")
+                break
+            last_err = RuntimeError(
+                "dssp failed (rc=%s): %s"
+                % (proc.returncode, (proc.stderr or proc.stdout or "").strip()[:300])
+            )
+        else:
+            raise RuntimeError(f"DSSP failed on {pdb_path}: {last_err}")
+
+    return _parse_dssp_coil_fraction(text)
+
+
+def _parse_dssp_coil_fraction(text: str) -> float:
+    """Parse classic DSSP text; STRUCTURE char is column 17 (0-based index 16)."""
+    lines = text.splitlines()
+    start = 0
+    for i, line in enumerate(lines):
+        if "  #  RESIDUE" in line or line.lstrip().startswith("#  RESIDUE"):
+            start = i + 1
+            break
+    else:
+        # Some builds omit the banner; scan all non-empty lines of sufficient length.
+        start = 0
+
+    ss_codes = []
+    for line in lines[start:]:
+        if len(line) < 17:
+            continue
+        # Classic DSSP: AA at column 14 (index 13), STRUCTURE at column 17 (index 16).
+        aa = line[13]
+        if aa == "!":
+            continue  # chain break
+        if not aa.isalpha():
+            continue
+        ss = line[16]
+        ss_codes.append(ss)
+
+    if not ss_codes:
+        raise RuntimeError("No DSSP residue records parsed")
+
+    n_coil = sum(1 for ss in ss_codes if ss in COIL_LIKE)
+    return float(n_coil) / float(len(ss_codes))
 
 
 def get_ca_coords(pdb_path: str) -> np.ndarray:
@@ -110,7 +198,17 @@ def main():
                          "raise it to stop badly-folded models becoming a 'state'.")
     ap.add_argument("--warn-plddt", type=float, default=70.0,
                     help="Warn if a chosen representative falls below this mean pLDDT.")
+    ap.add_argument(
+        "--max-coil-fraction",
+        type=float,
+        default=float(os.environ.get("MAX_COIL_FRACTION", "0.60")),
+        help="Discard models whose DSSP coil-like fraction exceeds this value "
+             "(C/S/T/unassigned). Default 0.60 matches the paper; set 1.0 to disable.",
+    )
     args = ap.parse_args()
+
+    if not (0.0 <= args.max_coil_fraction <= 1.0):
+        raise SystemExit("ERROR: --max-coil-fraction must be in [0, 1]")
 
     pred_dir = Path(args.pred_dir)
     out_dir = Path(args.out_dir)
@@ -120,15 +218,59 @@ def main():
     if not pdb_paths:
         raise RuntimeError(f"No PDBs found in {pred_dir}")
 
+    dssp_bin = None
+    if args.max_coil_fraction < 1.0:
+        dssp_bin = find_dssp_bin()
+        print(f"[{args.uniprot}] DSSP filter enabled (max coil fraction "
+              f"{args.max_coil_fraction:.2f}) using {dssp_bin}", flush=True)
+    else:
+        print(f"[{args.uniprot}] DSSP coil filter disabled (--max-coil-fraction 1.0)",
+              flush=True)
+
     records = []
+    n_dssp_fail = 0
     for p in pdb_paths:
+        mean_plddt = parse_mean_plddt_from_pdb(str(p))
+        coil_frac = None
+        keep = True
+        if dssp_bin is not None:
+            try:
+                coil_frac = coil_fraction(str(p), dssp_bin=dssp_bin)
+                keep = coil_frac <= args.max_coil_fraction
+            except Exception as e:
+                n_dssp_fail += 1
+                keep = False
+                print(f"[{args.uniprot}] WARNING: DSSP failed on {Path(p).name} "
+                      f"({e}); discarding model.", flush=True)
         records.append({
             "model": Path(p).name,
             "pdb_path": str(p),
-            "mean_plddt": parse_mean_plddt_from_pdb(str(p)),
+            "mean_plddt": mean_plddt,
+            "coil_fraction": coil_frac,
+            "passed_coil_filter": keep,
         })
 
-    df = pd.DataFrame(records).sort_values("mean_plddt", ascending=False).reset_index(drop=True)
+    df_all_input = pd.DataFrame(records)
+    n_before = len(df_all_input)
+    df = df_all_input[df_all_input["passed_coil_filter"]].copy()
+    n_dropped = n_before - len(df)
+    if dssp_bin is not None:
+        print(f"[{args.uniprot}] DSSP coil filter <= {args.max_coil_fraction}: "
+              f"kept {len(df)}/{n_before} models "
+              f"(dropped {n_dropped}; DSSP failures {n_dssp_fail})", flush=True)
+        # Audit trail for every input model (including rejects).
+        df_all_input.sort_values("mean_plddt", ascending=False).to_csv(
+            out_dir / f"{args.uniprot}_dssp_coil_filter.tsv", sep="\t", index=False
+        )
+
+    if df.empty:
+        raise RuntimeError(
+            f"No models left after DSSP coil filter "
+            f"(--max-coil-fraction {args.max_coil_fraction}); "
+            f"raise the threshold or check predictions / DSSP install."
+        )
+
+    df = df.sort_values("mean_plddt", ascending=False).reset_index(drop=True)
 
     if args.min_plddt > 0:
         n_before = len(df)
@@ -196,9 +338,16 @@ def main():
     if "rep_id_rep" in df_all.columns:
         df_all = df_all.drop(columns=["rep_id_rep"])
 
-    df_all.to_csv(out_dir / f"{args.uniprot}_plddt_rmsd_bestref.tsv", sep="\t", index=False)
+    # Keep audit columns when present.
+    out_cols = ["model", "pdb_path", "mean_plddt", "rmsd_to_best", "cluster", "rep_id"]
+    if "coil_fraction" in df_all.columns:
+        out_cols.insert(3, "coil_fraction")
+    df_all.to_csv(out_dir / f"{args.uniprot}_plddt_rmsd_bestref.tsv", sep="\t",
+                  columns=[c for c in out_cols if c in df_all.columns], index=False)
 
     rep_info = reps_df[["rep_id", "model", "pdb_path", "mean_plddt", "rmsd_to_best", "cluster"]].copy()
+    if "coil_fraction" in reps_df.columns:
+        rep_info.insert(4, "coil_fraction", reps_df["coil_fraction"])
     rep_info.to_csv(out_dir / f"{args.uniprot}_rep_info.tsv", sep="\t", index=False)
 
     plt.figure(figsize=(6, 4))

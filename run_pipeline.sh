@@ -119,10 +119,12 @@ fi
 
 if [[ "$SKIP_CLUSTERING" != "1" ]]; then
   echo "=== Step 2: pLDDT/RMSD clustering ==="
+  MAX_COIL_FRACTION="${MAX_COIL_FRACTION:-0.60}"
   python "$SCRIPTS_DIR/02_plddt_rmsd_kmeans.py" \
     --uniprot "$UNIPROT" \
     --pred-dir "$PRED_DIR" \
-    --out-dir "$ANALYSIS_DIR"
+    --out-dir "$ANALYSIS_DIR" \
+    --max-coil-fraction "$MAX_COIL_FRACTION"
 else
   echo "=== Step 2: Clustering (skipped) ==="
 fi
