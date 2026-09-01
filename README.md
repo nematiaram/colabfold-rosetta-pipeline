@@ -445,13 +445,22 @@ pipeline_steps/02_plddt_rmsd_kmeans.py
 The purpose of this step is to reduce the large number of ColabFold candidate
 structures to three representative structural hypotheses.
 
-This GitHub execution path does **not** currently apply a DSSP / secondary-structure
-filter. Clustering is performed on the ColabFold PDBs collected in `colabfold/`.
+### 6.0 DSSP secondary-structure filter
+
+Reduced MSA depth can yield models dominated by nonregular secondary structure.
+Before selecting the internal reference and clustering, every candidate PDB is
+assigned secondary structure with DSSP (`mkdssp` / `dssp`). A model is discarded
+when more than `--max-coil-fraction` of its residues are coil-like or nonregular
+(`C`, `S`, `T`, blank, or `-`).
+
+Default: `--max-coil-fraction 0.60` (paper methods). Disable with `1.0`.
+Operator override: environment variable `MAX_COIL_FRACTION`.
+Audit table: `analysis/<UID>_dssp_coil_filter.tsv` (coil fraction + pass/fail per model).
 
 ### 6.1 Mean pLDDT
 
-For each predicted PDB structure, mean pLDDT is calculated from the Cα atom
-B-factor field.
+For each predicted PDB structure that passes the DSSP filter, mean pLDDT is
+calculated from the Cα atom B-factor field.
 
 The candidate with the highest mean pLDDT is selected as an internal structural
 reference.
@@ -907,6 +916,7 @@ output/
 │
 ├── analysis/
 │   ├── <UID>_plddt_rmsd_bestref.tsv
+│   ├── <UID>_dssp_coil_filter.tsv
 │   ├── <UID>_rep_info.tsv
 │   └── <UID>_plddt_vs_rmsd_bestref.png
 │
@@ -949,6 +959,7 @@ The JSON/cluster entrypoint supports the following environment variables:
 | `ROSETTA_BIN` | image-provided path (`/opt/rosetta-bin` in the Dockerfile) | Path to Rosetta `per_residue_solvent_exposure`. |
 | `NC_METHOD` | `cone` | Rosetta neighbor-count method. May be `cone` or `sphere`. |
 | `PAIRWISE_THRESHOLD` | `5` | Minimum absolute pairwise ΔNC required for reporter designation. |
+| `MAX_COIL_FRACTION` | `0.60` | Discard ColabFold models whose DSSP coil-like fraction exceeds this value before clustering. Set `1.0` to disable. Requires `dssp`/`mkdssp` in the image. |
 | `RUN_LEGACY_DECISION` | `0` | Set to `1` to additionally run the older Step 4 decision workflow. |
 
 Example:
@@ -1129,8 +1140,10 @@ and for manuscript reproduction:
 - **`job.json` does not contain the reporter threshold.** `PAIRWISE_THRESHOLD=5`
   is an environment variable. If a webserver should let users change it, add
   `"pairwise_threshold": 5` to the JSON schema.
-- **DSSP filtering is not in this GitHub execution path.** Clustering currently
-  takes ColabFold PDBs directly.
+- **DSSP coil filter is on by default** (`--max-coil-fraction 0.60` /
+  `MAX_COIL_FRACTION`). Models with >60% C/S/T/unassigned DSSP codes are dropped
+  before reference selection and clustering. Set `MAX_COIL_FRACTION=1.0` to
+  disable. Requires `dssp`/`mkdssp` in the image.
 - **Step 5 still writes `preferred_reagent` and `best_per_pair` convenience
   fields.** The primary mapping is all compatible reagents (`reagents` /
   `reagent_residue_detail.tsv` / `reagent_target_counts.tsv`).

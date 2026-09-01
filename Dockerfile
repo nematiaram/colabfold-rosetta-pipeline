@@ -9,6 +9,12 @@ RUN set -eux; \
 ENV DEBIAN_FRONTEND=noninteractive
 ENV MPLBACKEND=Agg
 
+# DSSP (mkdssp) for the secondary-structure coil filter in step 02 (paper methods).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends dssp \
+    && rm -rf /var/lib/apt/lists/* \
+    && (command -v mkdssp >/dev/null || command -v dssp >/dev/null)
+
 WORKDIR /opt/pipeline
 
 COPY requirements.txt /opt/pipeline/requirements.txt

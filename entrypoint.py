@@ -436,6 +436,9 @@ def main():
     threads_per_worker = int(os.environ.get("THREADS_PER_WORKER", "1"))
     nc_method = os.environ.get("NC_METHOD", "cone")
     pairwise_threshold = os.environ.get("PAIRWISE_THRESHOLD", "5")
+    # Paper default: discard models with >60% coil-like DSSP (C/S/T/unassigned).
+    # Set MAX_COIL_FRACTION=1.0 to disable.
+    max_coil_fraction = os.environ.get("MAX_COIL_FRACTION", "0.60")
     run_legacy_decision = os.environ.get("RUN_LEGACY_DECISION", "0") == "1"
 
     if threads_per_worker < 1:
@@ -482,7 +485,8 @@ def main():
                   num_workers=num_workers)
 
     run([sys.executable, SCRIPTS_DIR / "02_plddt_rmsd_kmeans.py",
-         "--uniprot", uniprot, "--pred-dir", pred_dir, "--out-dir", analysis_dir])
+         "--uniprot", uniprot, "--pred-dir", pred_dir, "--out-dir", analysis_dir,
+         "--max-coil-fraction", str(max_coil_fraction)])
 
     run([sys.executable, SCRIPTS_DIR / "03_run_rosetta_nc.py",
          "--uniprot", uniprot,
