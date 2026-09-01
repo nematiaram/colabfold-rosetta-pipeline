@@ -8,11 +8,6 @@ Hydroxyl-radical high/medium/low are operational bins defined in this
 study from the Xu & Chance (2005) intrinsic-reactivity order, with
 cutoffs after Arg and after Glu. They are not categories defined by
 Xu & Chance.
-
-CF3 and diazirine are mapped to all 20 standard amino acids as an
-operational pipeline assumption (broad labeling), not as a claim that
-Cheng et al. (2017) demonstrated all 20 or that residue reactivities
-are experimentally uniform.
 """
 AA3_TO_1 = {
     "ALA": "A", "ARG": "R", "ASN": "N", "ASP": "D", "CYS": "C",
@@ -44,7 +39,7 @@ REAGENT_ORDER = [
     "Tetranitromethane",
     "Iodine",
 ]
-NONSPEC_ORDER = ["OH-high", "OH-medium", "OH-low", "diazirine", "CF3"]
+NONSPEC_ORDER = ["OH-high", "OH-medium", "OH-low"]
 NONSPEC = set(NONSPEC_ORDER)
 
 # Operational bins from the Xu & Chance 2005 Anal. Chem. 77:4549 order:
@@ -153,14 +148,6 @@ S2_ROWS = [
      "Asp, Asn, Ala, Gly",
      "Operational reactivity groups based on the Xu & Chance (2005) intrinsic-reactivity order",
      "Xu & Chance 2005"),
-    ("row", "Diazirine",
-     "All 20 standard amino acids",
-     "Broad diazirine/carbene labeling; all-20 mapping used as an operational pipeline assumption",
-     "Richards et al. 2016"),
-    ("row", "CF3",
-     "All 20 standard amino acids",
-     "Broad CF3 labeling; all-20 mapping used as an operational pipeline assumption",
-     "Cheng et al. 2017"),
 ]
 
 
@@ -189,9 +176,6 @@ def nonspec_for(aa: str):
         out.append("OH-medium")
     elif aa in OH_LOW:
         out.append("OH-low")
-    if aa in AA3_TO_1:
-        out.append("diazirine")
-        out.append("CF3")
     return out
 
 
