@@ -9,6 +9,8 @@ No absolute exposed/buried gates — discrimination is purely pairwise.
 Default threshold T=5 matches the benchmark paper.
 """
 import argparse
+import json
+import math
 from pathlib import Path
 
 import pandas as pd
@@ -20,6 +22,8 @@ PAIRS = [
     ("d13", "1-3", "more_exposed_in_13"),
     ("d23", "2-3", "more_exposed_in_23"),
 ]
+
+VIEW_SCHEMA_VERSION = 1
 
 
 def read_nc(path: Path) -> pd.DataFrame:
@@ -229,6 +233,114 @@ def write_recommendation(uid: str, picks: pd.DataFrame, path: Path) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _clean(value):
+    """Convert numpy / pandas scalars to JSON-safe Python types."""
+    if value is None:
+        return None
+    if isinstance(value, float) and math.isnan(value):
+        return None
+    if hasattr(value, "item"):
+        try:
+            value = value.item()
+        except (AttributeError, ValueError):
+            pass
+    if isinstance(value, float) and math.isnan(value):
+        return None
+    return value
+
+
+def _split_reagents(raw) -> list:
+    if raw is None:
+        return []
+    s = str(raw).strip()
+    if not s or s.lower() == "nan":
+        return []
+    return [x.strip() for x in s.split(";") if x.strip()]
+
+
+def write_view_json(
+    reporters: pd.DataFrame,
+    counts: pd.DataFrame,
+    picks: pd.DataFrame,
+    uid: str,
+    threshold: float,
+    path: Path,
+) -> None:
+    """Emit a display-ready JSON for the view page.
+
+    Shape is contract; bump VIEW_SCHEMA_VERSION on breaking changes.
+    """
+    residues = []
+    for _, r in reporters.sort_values("max_dNC", ascending=False).iterrows():
+        residues.append({
+            "residue": _clean(r["Residue"]),
+            "resname": _clean(r["resname"]),
+            "resnum": _clean(r["resnum"]),
+            "nc": [_clean(r["nc_rep1"]), _clean(r["nc_rep2"]), _clean(r["nc_rep3"])],
+            "deltas": {
+                "1v2": _clean(r["d12_rep1_vs_rep2"]),
+                "1v3": _clean(r["d13_rep1_vs_rep3"]),
+                "2v3": _clean(r["d23_rep2_vs_rep3"]),
+            },
+            "max_dNC": _clean(r["max_dNC"]),
+            "clears": {
+                "1v2": bool(r["clears_1-2"]),
+                "1v3": bool(r["clears_1-3"]),
+                "2v3": bool(r["clears_2-3"]),
+            },
+            "strongest_pair": _clean(r["strongest_category"]),
+            "strongest_dNC": _clean(r["strongest_dNC"]),
+            "more_labeled_rep": _clean(r["more_labeled_rep"]),
+            "preferred_reagent": _clean(r["preferred_reagent"]),
+            "all_reagents": _split_reagents(r["all_reagents"]),
+        })
+
+    reagents = []
+    for _, r in counts.iterrows():
+        reagents.append({
+            "reagent": _clean(r["reagent"]),
+            "tier": _clean(r["Tier"]),
+            "total_unique_residues": _clean(r["Total_targetable_unique_residues"]),
+            "per_pair": {
+                "1v2": _clean(r["Rep_1-2"]),
+                "2v3": _clean(r["Rep_2-3"]),
+                "1v3": _clean(r["Rep_1-3"]),
+            },
+            "pairs_covered": _clean(r["Pairs_covered"]),
+        })
+
+    best_per_pair = []
+    for _, p in picks.iterrows():
+        best_per_pair.append({
+            "pair": _clean(p["pair"]),
+            "pair_short": _clean(p["pair_short"]),
+            "residue": _clean(p["Residue"]),
+            "resname": _clean(p["resname"]),
+            "resnum": _clean(p["resnum"]),
+            "pair_diff": _clean(p["pair_diff"]),
+            "more_exposed_rep": _clean(p["more_exposed_rep"]),
+            "preferred_reagent": _clean(p["preferred_reagent"]),
+            "reagent_tier": _clean(p["reagent_tier"]),
+            "all_reagents": _split_reagents(p["all_reagents"]),
+        })
+
+    payload = {
+        "schema_version": VIEW_SCHEMA_VERSION,
+        "uniprot": uid,
+        "thresholds": {"delta_nc": threshold},
+        "counts": {
+            "above_threshold_residues": len(residues),
+            "reagents": len(reagents),
+        },
+        "above_threshold_residues": residues,
+        "reagent_target_counts": reagents,
+        "best_per_pair": best_per_pair,
+    }
+
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, allow_nan=False)
+
+
 def main():
     ap = argparse.ArgumentParser(description="Pairwise ΔNC ranking + reagent mapping.")
     ap.add_argument("--uniprot", required=True)
@@ -268,6 +380,15 @@ def main():
         ranked = df.sort_values(dcol, ascending=False).reset_index(drop=True)
         ranked.insert(0, "rank", range(1, len(ranked) + 1))
         ranked.to_csv(out_dir / f"{uid}_rank_{pair_name}.tsv", sep="\t", index=False)
+
+    write_view_json(
+        reporters=reporters,
+        counts=counts,
+        picks=picks,
+        uid=uid,
+        threshold=args.threshold,
+        path=out_dir / f"{uid}_view.json",
+    )
 
     print(f"[DONE] {uid}: {len(reporters)} reporters at T={args.threshold}")
     print(f"  wrote {out_dir}")
