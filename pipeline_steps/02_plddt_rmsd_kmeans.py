@@ -27,46 +27,125 @@ def find_dssp_bin() -> str:
     )
 
 
+def write_dssp_friendly_pdb(src: str, dst: Path) -> None:
+    """Rewrite a ColabFold PDB into a form DSSP 4 will accept.
+
+    ColabFold unrelaxed PDBs typically start with ``MODEL`` and omit ``CRYST1``.
+    DSSP 4 / libcifpp then fails with: Expected record CRYST1 but found MODEL.
+    We emit a dummy CRYST1 and keep only ATOM/HETATM records (first MODEL only).
+    """
+    atoms = []
+    in_model = False
+    saw_model = False
+    with open(src, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            key = line[:6]
+            if key.startswith("MODEL"):
+                if saw_model:
+                    break  # only first model
+                saw_model = True
+                in_model = True
+                continue
+            if key.startswith("ENDMDL"):
+                if in_model:
+                    break
+                continue
+            if key.startswith("ATOM  ") or key.startswith("HETATM"):
+                atoms.append(line if line.endswith("\n") else line + "\n")
+            elif key.startswith("TER"):
+                atoms.append(line if line.endswith("\n") else line + "\n")
+
+    if not atoms:
+        raise RuntimeError(f"No ATOM/HETATM records in {src}")
+
+    with open(dst, "w", encoding="utf-8") as out:
+        out.write(
+            "CRYST1    1.000    1.000    1.000  90.00  90.00  90.00 P 1           1\n"
+        )
+        out.writelines(atoms)
+        out.write("END\n")
+
+
+def _maybe_set_libcifpp_data_dir() -> None:
+    """Point DSSP 4 at components.cif when conda/local installs need it."""
+    if os.environ.get("LIBCIFPP_DATA_DIR"):
+        return
+    candidates = [
+        Path("/usr/share/libcifpp"),
+        Path("/usr/local/share/libcifpp"),
+    ]
+    # Common conda-forge layout next to the dssp binary.
+    dssp = shutil.which("mkdssp") or shutil.which("dssp")
+    if dssp:
+        prefix = Path(dssp).resolve().parent.parent
+        candidates.extend([
+            prefix / "share" / "libcifpp",
+            prefix / "share" / "dssp",
+        ])
+    for base in candidates:
+        cif = base / "components.cif"
+        if cif.is_file():
+            os.environ["LIBCIFPP_DATA_DIR"] = str(base)
+            return
+
+
 def coil_fraction(pdb_path: str, dssp_bin: Optional[str] = None) -> float:
     """Fraction of residues with coil-like / nonregular DSSP assignment.
 
     Handles both classic DSSP text (CMBI 2.x/3.x) and mmCIF (DSSP 4+, which
     defaults to mmCIF). Counts C, S, T, blank, and '-' as nonregular per the
     paper methods.
+
+    ColabFold PDBs are rewritten with a dummy CRYST1 (and without MODEL wrappers)
+    before DSSP runs — required for DSSP 4.
     """
     bin_path = dssp_bin or find_dssp_bin()
     pdb_path = str(pdb_path)
+    _maybe_set_libcifpp_data_dir()
 
     with tempfile.TemporaryDirectory(prefix="dssp_") as tmp:
-        out_path = Path(tmp) / "out.dssp"
+        tmp_dir = Path(tmp)
+        friendly = tmp_dir / "input.pdb"
+        out_path = tmp_dir / "out.dssp"
+        write_dssp_friendly_pdb(pdb_path, friendly)
+
         # 1. DSSP 4 with the flag that forces the classic text format we prefer.
         # 2. Default modern invocation (DSSP 4 will emit mmCIF here; the parser
         #    detects and handles it).
         # 3. Legacy CMBI -i/-o form for older binaries.
         attempts = [
-            [bin_path, "--output-format", "dssp", pdb_path, str(out_path)],
-            [bin_path, pdb_path, str(out_path)],
-            [bin_path, "-i", pdb_path, "-o", str(out_path)],
+            [bin_path, "--output-format", "dssp", str(friendly), str(out_path)],
+            [bin_path, str(friendly), str(out_path)],
+            [bin_path, "-i", str(friendly), "-o", str(out_path)],
         ]
-        last_err = None
+        errors = []
         text = None
         for cmd in attempts:
             try:
                 proc = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=120, check=False
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                    check=False,
+                    env=os.environ.copy(),
                 )
             except (OSError, subprocess.SubprocessError) as e:
-                last_err = e
+                errors.append("%s -> %s" % (" ".join(cmd), e))
                 continue
             if proc.returncode == 0 and out_path.is_file() and out_path.stat().st_size > 0:
                 text = out_path.read_text(encoding="utf-8", errors="replace")
                 break
-            last_err = RuntimeError(
-                "dssp failed (rc=%s): %s"
-                % (proc.returncode, (proc.stderr or proc.stdout or "").strip()[:300])
-            )
+            detail = (proc.stderr or proc.stdout or "").strip().replace("\n", " | ")[:300]
+            errors.append("rc=%s cmd=%s err=%s" % (proc.returncode, " ".join(cmd), detail))
+            try:
+                out_path.unlink()
+            except OSError:
+                pass
         if text is None:
-            raise RuntimeError(f"DSSP failed on {pdb_path}: {last_err}")
+            raise RuntimeError(
+                "DSSP failed on %s after sanitize: %s" % (pdb_path, " || ".join(errors))
+            )
 
     return _parse_dssp_coil_fraction(text)
 
