@@ -27,55 +27,164 @@ def find_dssp_bin() -> str:
     )
 
 
+def write_dssp_friendly_pdb(src: str, dst: Path) -> None:
+    """Rewrite a ColabFold PDB into a form DSSP 4 will accept.
+
+    ColabFold unrelaxed PDBs typically start with ``MODEL`` and omit ``CRYST1``.
+    DSSP 4 / libcifpp then fails with: Expected record CRYST1 but found MODEL.
+    We emit a dummy CRYST1 and keep only ATOM/HETATM records (first MODEL only).
+    """
+    atoms = []
+    in_model = False
+    saw_model = False
+    with open(src, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            key = line[:6]
+            if key.startswith("MODEL"):
+                if saw_model:
+                    break  # only first model
+                saw_model = True
+                in_model = True
+                continue
+            if key.startswith("ENDMDL"):
+                if in_model:
+                    break
+                continue
+            if key.startswith("ATOM  ") or key.startswith("HETATM"):
+                atoms.append(line if line.endswith("\n") else line + "\n")
+            elif key.startswith("TER"):
+                atoms.append(line if line.endswith("\n") else line + "\n")
+
+    if not atoms:
+        raise RuntimeError(f"No ATOM/HETATM records in {src}")
+
+    with open(dst, "w", encoding="utf-8") as out:
+        out.write(
+            "CRYST1    1.000    1.000    1.000  90.00  90.00  90.00 P 1           1\n"
+        )
+        out.writelines(atoms)
+        out.write("END\n")
+
+
+def _maybe_set_libcifpp_data_dir() -> None:
+    """Point DSSP 4 at components.cif when conda/local installs need it."""
+    if os.environ.get("LIBCIFPP_DATA_DIR"):
+        return
+    candidates = [
+        Path("/usr/share/libcifpp"),
+        Path("/usr/local/share/libcifpp"),
+    ]
+    # Common conda-forge layout next to the dssp binary.
+    dssp = shutil.which("mkdssp") or shutil.which("dssp")
+    if dssp:
+        prefix = Path(dssp).resolve().parent.parent
+        candidates.extend([
+            prefix / "share" / "libcifpp",
+            prefix / "share" / "dssp",
+        ])
+    for base in candidates:
+        cif = base / "components.cif"
+        if cif.is_file():
+            os.environ["LIBCIFPP_DATA_DIR"] = str(base)
+            return
+
+
 def coil_fraction(pdb_path: str, dssp_bin: Optional[str] = None) -> float:
     """Fraction of residues with coil-like / nonregular DSSP assignment.
 
-    Runs mkdssp/dssp, parses the classic DSSP STRUCTURE column (index 16), and
-    counts C, S, T, blank, and '-' as nonregular (paper methods).
+    Handles both classic DSSP text (CMBI 2.x/3.x) and mmCIF (DSSP 4+, which
+    defaults to mmCIF). Counts C, S, T, blank, and '-' as nonregular per the
+    paper methods.
+
+    ColabFold PDBs are rewritten with a dummy CRYST1 (and without MODEL wrappers)
+    before DSSP runs — required for DSSP 4.
     """
     bin_path = dssp_bin or find_dssp_bin()
     pdb_path = str(pdb_path)
+    _maybe_set_libcifpp_data_dir()
 
     with tempfile.TemporaryDirectory(prefix="dssp_") as tmp:
-        out_path = Path(tmp) / "out.dssp"
-        # Prefer modern CLI; fall back to -i/-o for older CMBI builds.
+        tmp_dir = Path(tmp)
+        friendly = tmp_dir / "input.pdb"
+        out_path = tmp_dir / "out.dssp"
+        write_dssp_friendly_pdb(pdb_path, friendly)
+
+        # 1. DSSP 4 with the flag that forces the classic text format we prefer.
+        # 2. Default modern invocation (DSSP 4 will emit mmCIF here; the parser
+        #    detects and handles it).
+        # 3. Legacy CMBI -i/-o form for older binaries.
         attempts = [
-            [bin_path, pdb_path, str(out_path)],
-            [bin_path, "-i", pdb_path, "-o", str(out_path)],
+            [bin_path, "--output-format", "dssp", str(friendly), str(out_path)],
+            [bin_path, str(friendly), str(out_path)],
+            [bin_path, "-i", str(friendly), "-o", str(out_path)],
         ]
-        last_err = None
+        errors = []
+        text = None
         for cmd in attempts:
             try:
                 proc = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=120, check=False
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                    check=False,
+                    env=os.environ.copy(),
                 )
             except (OSError, subprocess.SubprocessError) as e:
-                last_err = e
+                errors.append("%s -> %s" % (" ".join(cmd), e))
                 continue
             if proc.returncode == 0 and out_path.is_file() and out_path.stat().st_size > 0:
                 text = out_path.read_text(encoding="utf-8", errors="replace")
                 break
-            last_err = RuntimeError(
-                "dssp failed (rc=%s): %s"
-                % (proc.returncode, (proc.stderr or proc.stdout or "").strip()[:300])
+            detail = (proc.stderr or proc.stdout or "").strip().replace("\n", " | ")[:300]
+            errors.append("rc=%s cmd=%s err=%s" % (proc.returncode, " ".join(cmd), detail))
+            try:
+                out_path.unlink()
+            except OSError:
+                pass
+        if text is None:
+            raise RuntimeError(
+                "DSSP failed on %s after sanitize: %s" % (pdb_path, " || ".join(errors))
             )
-        else:
-            raise RuntimeError(f"DSSP failed on {pdb_path}: {last_err}")
 
     return _parse_dssp_coil_fraction(text)
 
 
 def _parse_dssp_coil_fraction(text: str) -> float:
-    """Parse classic DSSP text; STRUCTURE char is column 17 (0-based index 16)."""
+    """Coil-like fraction from DSSP output, format auto-detected.
+
+    Classic text (CMBI 2.x/3.x): STRUCTURE column at index 16, one row per residue.
+    mmCIF (DSSP 4+): `_dssp_struct_summary.secondary_structure` inside a `loop_`.
+    """
+    if _looks_like_mmcif(text):
+        ss_codes = _parse_mmcif_dssp_ss(text)
+    else:
+        ss_codes = _parse_classic_dssp_ss(text)
+
+    if not ss_codes:
+        raise RuntimeError("No DSSP residue records parsed")
+
+    n_coil = sum(1 for ss in ss_codes if ss in COIL_LIKE)
+    return float(n_coil) / float(len(ss_codes))
+
+
+def _looks_like_mmcif(text: str) -> bool:
+    head = text.lstrip()[:4096]
+    if head.startswith("data_"):
+        return True
+    if "_dssp_struct_summary" in head:
+        return True
+    return "loop_" in head and "_dssp_" in head and "_atom_site" not in head[:200]
+
+
+def _parse_classic_dssp_ss(text: str) -> list:
     lines = text.splitlines()
     start = 0
     for i, line in enumerate(lines):
         if "  #  RESIDUE" in line or line.lstrip().startswith("#  RESIDUE"):
             start = i + 1
             break
-    else:
-        # Some builds omit the banner; scan all non-empty lines of sufficient length.
-        start = 0
+    # If no banner, scan all non-empty lines of sufficient length (start stays 0).
 
     ss_codes = []
     for line in lines[start:]:
@@ -87,14 +196,78 @@ def _parse_dssp_coil_fraction(text: str) -> float:
             continue  # chain break
         if not aa.isalpha():
             continue
-        ss = line[16]
-        ss_codes.append(ss)
+        ss_codes.append(line[16])
+    return ss_codes
 
-    if not ss_codes:
-        raise RuntimeError("No DSSP residue records parsed")
 
-    n_coil = sum(1 for ss in ss_codes if ss in COIL_LIKE)
-    return float(n_coil) / float(len(ss_codes))
+def _parse_mmcif_dssp_ss(text: str) -> list:
+    """Extract SS codes from DSSP 4 mmCIF output.
+
+    Walks each `loop_` block, looks for the `.secondary_structure` column, and
+    reads its value from every data row of that loop. `.` and `?` (mmCIF null /
+    unknown) both count as blank, matching the classic-format behavior.
+    """
+    lines = text.splitlines()
+    ss_codes = []
+    i, n = 0, len(lines)
+    while i < n:
+        if lines[i].strip() != "loop_":
+            i += 1
+            continue
+        i += 1
+        headers = []
+        while i < n and lines[i].lstrip().startswith("_"):
+            headers.append(lines[i].strip())
+            i += 1
+        ss_idx = next(
+            (j for j, h in enumerate(headers) if h.endswith(".secondary_structure")),
+            None,
+        )
+        if ss_idx is None:
+            # Skip data rows of this loop.
+            while i < n:
+                s = lines[i].strip()
+                if not s or s.startswith("#") or s == "loop_" or s.startswith("_") or s.startswith("data_"):
+                    break
+                i += 1
+            continue
+        while i < n:
+            s = lines[i].strip()
+            if not s or s.startswith("#") or s == "loop_" or s.startswith("_") or s.startswith("data_"):
+                break
+            fields = _mmcif_split(s)
+            if len(fields) > ss_idx:
+                code = fields[ss_idx]
+                if code in (".", "?"):
+                    ss_codes.append(" ")
+                else:
+                    ss_codes.append(code[:1] or " ")
+            i += 1
+    return ss_codes
+
+
+def _mmcif_split(row: str) -> list:
+    """Whitespace split respecting single- and double-quoted fields."""
+    fields, i, n = [], 0, len(row)
+    while i < n:
+        ch = row[i]
+        if ch.isspace():
+            i += 1
+            continue
+        if ch in "'\"":
+            quote = ch
+            i += 1
+            start = i
+            while i < n and row[i] != quote:
+                i += 1
+            fields.append(row[start:i])
+            i += 1
+        else:
+            start = i
+            while i < n and not row[i].isspace():
+                i += 1
+            fields.append(row[start:i])
+    return fields
 
 
 def get_ca_coords(pdb_path: str) -> np.ndarray:
