@@ -456,19 +456,14 @@ when more than `--max-coil-fraction` of its residues are coil-like or nonregular
 Default: `--max-coil-fraction 0.60` (paper methods). Disable with `1.0`.
 Operator override: environment variable `MAX_COIL_FRACTION`.
 
-**Short sequences:** if the model has fewer than 30 residues, the coil filter is
-skipped automatically so ROSIE smoke tests can finish. Tiny peptides are almost
-entirely coil-like by DSSP, so the paper cutoff would discard every model
-(`kept 0/N`, `DSSP failures 0`). The run emits a loud WARNING and a `warnings`
-entry in `*_view.json` (`code: coil_filter_skipped_short_sequence`) stating
-that results are **not** scientifically interpretable.
-
-**Filter empties the ensemble:** if every model fails the coil cutoff, the
-pipeline does **not** abort and does **not** invent reps from rejected models.
-Step 02 exits cleanly with empty `rep_info.tsv` plus a WARNING
-(`code: no_valid_structures_after_coil_filter`). The entrypoint skips Rosetta /
-pairwise and writes a soft-complete `*_view.json` (`reps: []`, warnings set).
-Only a true DSSP install failure (every model errors in DSSP) still hard-aborts.
+**Filter empties the ensemble (any length, including short peptides):** if every
+model fails the coil cutoff, the pipeline does **not** abort and does **not**
+invent reps from rejected models. Step 02 exits cleanly with empty
+`rep_info.tsv` plus a WARNING (`code: no_valid_structures_after_coil_filter`).
+The entrypoint skips Rosetta / pairwise and writes a soft-complete `*_view.json`
+(`reps: []`, warnings set). Tiny peptides usually hit this path under the paper
+0.60 cutoff because DSSP marks them as coil-dominated. Only a true DSSP install
+failure (every model errors in DSSP) still hard-aborts.
 Audit table: `analysis/<UID>_dssp_coil_filter.tsv` (coil fraction + pass/fail per model).
 
 ### 6.1 Mean pLDDT
