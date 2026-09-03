@@ -463,27 +463,36 @@ def main():
 
     if df.empty:
         coils = df_all_input["coil_fraction"].dropna()
-        detail = (
-            f"No models left after DSSP coil filter "
-            f"(--max-coil-fraction {args.max_coil_fraction}; "
-            f"kept 0/{n_before}, DSSP failures {n_dssp_fail})."
-        )
-        if n_dssp_fail == 0 and len(coils) > 0:
-            detail += (
-                f" DSSP itself succeeded; coil fractions "
-                f"min/median/max="
+        coil_stats = ""
+        if len(coils) > 0:
+            coil_stats = (
+                f" Coil fractions min/median/max="
                 f"{float(coils.min()):.2f}/"
                 f"{float(coils.median()):.2f}/"
-                f"{float(coils.max()):.2f}. "
-                f"Typical for very short or disordered sequences where most "
-                f"residues are coil-like. Set MAX_COIL_FRACTION=1.0 to disable "
-                f"the filter, or use a longer folded protein."
+                f"{float(coils.max()):.2f}."
             )
-        else:
-            detail += (
-                " Check the DSSP install, or set MAX_COIL_FRACTION=1.0 to disable."
+        if n_dssp_fail == n_before and n_before > 0:
+            # Every model failed DSSP itself -- cannot invent structure.
+            raise RuntimeError(
+                f"No models left after DSSP coil filter "
+                f"(kept 0/{n_before}, DSSP failures {n_dssp_fail}). "
+                f"Check the DSSP install, or set MAX_COIL_FRACTION=1.0 to disable."
             )
-        raise RuntimeError(detail)
+        warn_msg = (
+            f"No models passed DSSP coil filter "
+            f"(--max-coil-fraction {args.max_coil_fraction}; "
+            f"kept 0/{n_before}, DSSP failures {n_dssp_fail})."
+            f"{coil_stats} "
+            f"Continuing with all {n_before} models so the workflow can finish; "
+            f"results are not scientifically interpretable under the paper "
+            f"0.60 coil cutoff (ensemble is coil-dominated or disordered)."
+        )
+        print(f"[{args.uniprot}] WARNING: {warn_msg}", flush=True)
+        pipeline_warnings.append({
+            "code": "coil_filter_kept_zero_continued",
+            "message": warn_msg,
+        })
+        df = df_all_input.copy()
 
     df = df.sort_values("mean_plddt", ascending=False).reset_index(drop=True)
 

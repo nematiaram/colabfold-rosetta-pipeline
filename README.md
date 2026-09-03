@@ -459,10 +459,15 @@ Operator override: environment variable `MAX_COIL_FRACTION`.
 **Short sequences:** if the model has fewer than 30 residues, the coil filter is
 skipped automatically so ROSIE smoke tests can finish. Tiny peptides are almost
 entirely coil-like by DSSP, so the paper cutoff would discard every model
-(`kept 0/N`, `DSSP failures 0`) and abort the job. The run still emits a loud
-WARNING and a `warnings` entry in `*_view.json`
-(`code: coil_filter_skipped_short_sequence`) stating that results are **not**
-scientifically interpretable.
+(`kept 0/N`, `DSSP failures 0`). The run emits a loud WARNING and a `warnings`
+entry in `*_view.json` (`code: coil_filter_skipped_short_sequence`) stating
+that results are **not** scientifically interpretable.
+
+**Filter empties the ensemble:** if length ≥30 but every model still fails the
+coil cutoff, the pipeline no longer aborts. It continues with all models,
+logs a WARNING, and records
+`warnings[].code = coil_filter_kept_zero_continued` in `*_view.json`. Only a
+true DSSP install failure (every model errors in DSSP) still hard-aborts.
 Audit table: `analysis/<UID>_dssp_coil_filter.tsv` (coil fraction + pass/fail per model).
 
 ### 6.1 Mean pLDDT
