@@ -15,6 +15,11 @@ import matplotlib.pyplot as plt
 # Paper methods: discard models dominated by nonregular SS (C/S/T/unassigned).
 COIL_LIKE = frozenset({"C", "S", "T", " ", "-", ""})
 
+# DSSP secondary-structure filters are meaningless on tiny peptides: nearly every
+# residue is coil-like, so the paper 0.60 cutoff drops the entire ensemble and
+# aborts the job. Auto-disable below this CA count (ROSIE short smoke tests).
+MIN_RESIDUES_FOR_COIL_FILTER = 30
+
 
 def find_dssp_bin() -> str:
     for name in ("mkdssp", "dssp"):
@@ -391,6 +396,19 @@ def main():
     if not pdb_paths:
         raise RuntimeError(f"No PDBs found in {pred_dir}")
 
+    # Estimate chain length from the first model (CA count). Short peptides are
+    # coil-dominated; applying the paper 60% filter empties the ensemble.
+    n_res = int(get_ca_coords(pdb_paths[0]).shape[0])
+    if args.max_coil_fraction < 1.0 and n_res < MIN_RESIDUES_FOR_COIL_FILTER:
+        print(
+            f"[{args.uniprot}] NOTE: sequence has {n_res} residues "
+            f"(<{MIN_RESIDUES_FOR_COIL_FILTER}); DSSP coil filter is not "
+            f"applicable and will be skipped. Use a longer protein to apply "
+            f"the paper 0.60 cutoff.",
+            flush=True,
+        )
+        args.max_coil_fraction = 1.0
+
     dssp_bin = None
     if args.max_coil_fraction < 1.0:
         dssp_bin = find_dssp_bin()
@@ -437,11 +455,28 @@ def main():
         )
 
     if df.empty:
-        raise RuntimeError(
+        coils = df_all_input["coil_fraction"].dropna()
+        detail = (
             f"No models left after DSSP coil filter "
-            f"(--max-coil-fraction {args.max_coil_fraction}); "
-            f"raise the threshold or check predictions / DSSP install."
+            f"(--max-coil-fraction {args.max_coil_fraction}; "
+            f"kept 0/{n_before}, DSSP failures {n_dssp_fail})."
         )
+        if n_dssp_fail == 0 and len(coils) > 0:
+            detail += (
+                f" DSSP itself succeeded; coil fractions "
+                f"min/median/max="
+                f"{float(coils.min()):.2f}/"
+                f"{float(coils.median()):.2f}/"
+                f"{float(coils.max()):.2f}. "
+                f"Typical for very short or disordered sequences where most "
+                f"residues are coil-like. Set MAX_COIL_FRACTION=1.0 to disable "
+                f"the filter, or use a longer folded protein."
+            )
+        else:
+            detail += (
+                " Check the DSSP install, or set MAX_COIL_FRACTION=1.0 to disable."
+            )
+        raise RuntimeError(detail)
 
     df = df.sort_values("mean_plddt", ascending=False).reset_index(drop=True)
 
