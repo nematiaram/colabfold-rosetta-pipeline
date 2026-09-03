@@ -455,6 +455,11 @@ when more than `--max-coil-fraction` of its residues are coil-like or nonregular
 
 Default: `--max-coil-fraction 0.60` (paper methods). Disable with `1.0`.
 Operator override: environment variable `MAX_COIL_FRACTION`.
+
+**Short sequences:** if the model has fewer than 30 residues, the coil filter is
+skipped automatically (with a NOTE). Tiny peptides are almost entirely
+coil-like by DSSP, so the paper cutoff would discard every model (`kept 0/N`,
+`DSSP failures 0`) and abort the job.
 Audit table: `analysis/<UID>_dssp_coil_filter.tsv` (coil fraction + pass/fail per model).
 
 ### 6.1 Mean pLDDT
