@@ -16,11 +16,6 @@ import matplotlib.pyplot as plt
 # Paper methods: discard models dominated by nonregular SS (C/S/T/unassigned).
 COIL_LIKE = frozenset({"C", "S", "T", " ", "-", ""})
 
-# DSSP secondary-structure filters are meaningless on tiny peptides: nearly every
-# residue is coil-like, so the paper 0.60 cutoff drops the entire ensemble and
-# aborts the job. Auto-disable below this CA count (ROSIE short smoke tests).
-MIN_RESIDUES_FOR_COIL_FILTER = 30
-
 
 def find_dssp_bin() -> str:
     for name in ("mkdssp", "dssp"):
@@ -397,24 +392,7 @@ def main():
     if not pdb_paths:
         raise RuntimeError(f"No PDBs found in {pred_dir}")
 
-    # Estimate chain length from the first model (CA count). Short peptides are
-    # coil-dominated; applying the paper 60% filter empties the ensemble.
     pipeline_warnings = []
-    n_res = int(get_ca_coords(pdb_paths[0]).shape[0])
-    if args.max_coil_fraction < 1.0 and n_res < MIN_RESIDUES_FOR_COIL_FILTER:
-        warn_msg = (
-            f"Sequence has {n_res} residues "
-            f"(<{MIN_RESIDUES_FOR_COIL_FILTER}); DSSP coil filter skipped "
-            f"because short peptides are coil-dominated. Pipeline continues "
-            f"for plumbing/smoke tests only -- results are not scientifically "
-            f"interpretable. Use a longer folded protein for real analysis."
-        )
-        print(f"[{args.uniprot}] WARNING: {warn_msg}", flush=True)
-        pipeline_warnings.append({
-            "code": "coil_filter_skipped_short_sequence",
-            "message": warn_msg,
-        })
-        args.max_coil_fraction = 1.0
 
     dssp_bin = None
     if args.max_coil_fraction < 1.0:
