@@ -384,6 +384,51 @@ def _coerce_scalar(value):
     return s
 
 
+def _load_pipeline_warnings(warnings_json):
+    if warnings_json is None or not warnings_json.is_file():
+        return []
+    try:
+        wpayload = json.loads(warnings_json.read_text(encoding="utf-8"))
+        raw = wpayload.get("warnings", []) if isinstance(wpayload, dict) else []
+        return raw if isinstance(raw, list) else []
+    except (OSError, ValueError) as e:
+        print("WARNING: could not read %s (%s); view.json warnings omitted."
+              % (warnings_json, e), file=sys.stderr)
+        return []
+
+
+def _rep_info_has_rows(rep_info_tsv):
+    """True if rep_info.tsv exists and has at least one data row."""
+    if not rep_info_tsv.is_file():
+        return False
+    try:
+        return len(_read_tsv_records(rep_info_tsv)) > 0
+    except OSError:
+        return False
+
+
+def write_soft_complete_view_json(view_json_path, uniprot, threshold, warnings):
+    """Minimal view.json when analysis cannot produce reps (exit 0 path)."""
+    payload = {
+        "schema_version": 1,
+        "uniprot": uniprot,
+        "thresholds": {"delta_nc": float(threshold)},
+        "counts": {"above_threshold_residues": 0, "reagents": 0},
+        "above_threshold_residues": [],
+        "reagent_target_counts": [],
+        "best_per_pair": [],
+        "reps": [],
+        "warnings": warnings,
+    }
+    view_json_path.parent.mkdir(parents=True, exist_ok=True)
+    view_json_path.write_text(
+        json.dumps(payload, indent=2, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+    print("[VIEW] soft-complete view.json (%d warning(s)) -> %s"
+          % (len(warnings), view_json_path), flush=True)
+
+
 def merge_reps_into_view_json(view_json_path, rep_info_tsv, warnings_json=None):
     """Add reps (+ optional pipeline warnings) to the view.json from step 05.
 
@@ -414,16 +459,7 @@ def merge_reps_into_view_json(view_json_path, rep_info_tsv, warnings_json=None):
               % (rep_info_tsv, e), file=sys.stderr)
         return
 
-    warnings = []
-    if warnings_json is not None and warnings_json.is_file():
-        try:
-            wpayload = json.loads(warnings_json.read_text(encoding="utf-8"))
-            raw = wpayload.get("warnings", []) if isinstance(wpayload, dict) else []
-            if isinstance(raw, list):
-                warnings = raw
-        except (OSError, ValueError) as e:
-            print("WARNING: could not read %s (%s); view.json warnings omitted."
-                  % (warnings_json, e), file=sys.stderr)
+    warnings = _load_pipeline_warnings(warnings_json)
     payload["warnings"] = warnings
 
     view_json_path.write_text(
@@ -501,9 +537,37 @@ def main():
          "--uniprot", uniprot, "--pred-dir", pred_dir, "--out-dir", analysis_dir,
          "--max-coil-fraction", str(max_coil_fraction)])
 
+    rep_info = analysis_dir / ("%s_rep_info.tsv" % uniprot)
+    warnings_json = analysis_dir / ("%s_pipeline_warnings.json" % uniprot)
+    view_json_path = pairwise_out / ("%s_view.json" % uniprot)
+
+    # Soft-complete: coil filter kept zero valid structures -- do not invent
+    # reps or run Rosetta; still exit 0 with a warning-bearing view.json.
+    if not _rep_info_has_rows(rep_info):
+        warnings = _load_pipeline_warnings(warnings_json)
+        if not warnings:
+            warnings = [{
+                "code": "no_valid_structures_after_coil_filter",
+                "message": (
+                    "No representative structures available after filtering; "
+                    "skipping Rosetta/pairwise analysis."
+                ),
+            }]
+        print("WARNING: no valid structures after coil filter; "
+              "skipping Rosetta and pairwise steps.", flush=True)
+        write_soft_complete_view_json(
+            view_json_path=view_json_path,
+            uniprot=uniprot,
+            threshold=pairwise_threshold,
+            warnings=warnings,
+        )
+        print("[DONE] Pipeline soft-complete in: %s" % work_dir)
+        print("  pairwise/%s_view.json  (warnings only; no reps)" % uniprot)
+        return
+
     run([sys.executable, SCRIPTS_DIR / "03_run_rosetta_nc.py",
          "--uniprot", uniprot,
-         "--rep-info", analysis_dir / ("%s_rep_info.tsv" % uniprot),
+         "--rep-info", rep_info,
          "--out-dir", rosetta_out, "--rosetta-bin", rosetta_bin, "--method", nc_method])
 
     run([sys.executable, SCRIPTS_DIR / "05_pairwise_delta_nc.py",
@@ -512,9 +576,9 @@ def main():
          "--out-dir", pairwise_out, "--threshold", pairwise_threshold])
 
     merge_reps_into_view_json(
-        view_json_path=pairwise_out / ("%s_view.json" % uniprot),
-        rep_info_tsv=analysis_dir / ("%s_rep_info.tsv" % uniprot),
-        warnings_json=analysis_dir / ("%s_pipeline_warnings.json" % uniprot),
+        view_json_path=view_json_path,
+        rep_info_tsv=rep_info,
+        warnings_json=warnings_json,
     )
 
     if run_legacy_decision:

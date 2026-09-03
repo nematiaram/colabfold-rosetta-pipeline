@@ -463,11 +463,12 @@ entirely coil-like by DSSP, so the paper cutoff would discard every model
 entry in `*_view.json` (`code: coil_filter_skipped_short_sequence`) stating
 that results are **not** scientifically interpretable.
 
-**Filter empties the ensemble:** if length ≥30 but every model still fails the
-coil cutoff, the pipeline no longer aborts. It continues with all models,
-logs a WARNING, and records
-`warnings[].code = coil_filter_kept_zero_continued` in `*_view.json`. Only a
-true DSSP install failure (every model errors in DSSP) still hard-aborts.
+**Filter empties the ensemble:** if every model fails the coil cutoff, the
+pipeline does **not** abort and does **not** invent reps from rejected models.
+Step 02 exits cleanly with empty `rep_info.tsv` plus a WARNING
+(`code: no_valid_structures_after_coil_filter`). The entrypoint skips Rosetta /
+pairwise and writes a soft-complete `*_view.json` (`reps: []`, warnings set).
+Only a true DSSP install failure (every model errors in DSSP) still hard-aborts.
 Audit table: `analysis/<UID>_dssp_coil_filter.tsv` (coil fraction + pass/fail per model).
 
 ### 6.1 Mean pLDDT

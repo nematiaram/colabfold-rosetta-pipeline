@@ -483,16 +483,32 @@ def main():
             f"(--max-coil-fraction {args.max_coil_fraction}; "
             f"kept 0/{n_before}, DSSP failures {n_dssp_fail})."
             f"{coil_stats} "
-            f"Continuing with all {n_before} models so the workflow can finish; "
-            f"results are not scientifically interpretable under the paper "
-            f"0.60 coil cutoff (ensemble is coil-dominated or disordered)."
+            f"Predicted structures are not valid for conformation analysis "
+            f"under the paper cutoff (ensemble is coil-dominated or disordered). "
+            f"Skipping clustering/Rosetta; pipeline completes with a warning."
         )
         print(f"[{args.uniprot}] WARNING: {warn_msg}", flush=True)
         pipeline_warnings.append({
-            "code": "coil_filter_kept_zero_continued",
+            "code": "no_valid_structures_after_coil_filter",
             "message": warn_msg,
         })
-        df = df_all_input.copy()
+        # Empty rep table (headers only) signals entrypoint to soft-complete.
+        rep_cols = ["rep_id", "model", "pdb_path", "mean_plddt", "coil_fraction",
+                    "rmsd_to_best", "cluster"]
+        pd.DataFrame(columns=rep_cols).to_csv(
+            out_dir / f"{args.uniprot}_rep_info.tsv", sep="\t", index=False
+        )
+        df_all_input.sort_values("mean_plddt", ascending=False).to_csv(
+            out_dir / f"{args.uniprot}_plddt_rmsd_bestref.tsv", sep="\t", index=False
+        )
+        warnings_path = out_dir / f"{args.uniprot}_pipeline_warnings.json"
+        warnings_path.write_text(
+            json.dumps({"warnings": pipeline_warnings}, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        print(f"[DONE] Wrote soft-complete outputs to {out_dir} (no valid structures)",
+              flush=True)
+        return
 
     df = df.sort_values("mean_plddt", ascending=False).reset_index(drop=True)
 
