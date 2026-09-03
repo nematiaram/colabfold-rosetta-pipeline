@@ -384,12 +384,12 @@ def _coerce_scalar(value):
     return s
 
 
-def merge_reps_into_view_json(view_json_path, rep_info_tsv):
-    """Add a "reps" section to the view.json produced by step 05.
+def merge_reps_into_view_json(view_json_path, rep_info_tsv, warnings_json=None):
+    """Add reps (+ optional pipeline warnings) to the view.json from step 05.
 
-    Step 05 doesn't see step 02's rep_info.tsv, so we splice it in here where
-    both files exist. Missing inputs are logged and skipped rather than fatal:
-    the view will render its other panels either way.
+    Step 05 doesn't see step 02 outputs, so we splice them in here where both
+    files exist. Missing inputs are logged and skipped rather than fatal: the
+    view will render its other panels either way.
     """
     if not view_json_path.is_file():
         print("WARNING: %s missing; skipping rep-info merge." % view_json_path,
@@ -414,11 +414,24 @@ def merge_reps_into_view_json(view_json_path, rep_info_tsv):
               % (rep_info_tsv, e), file=sys.stderr)
         return
 
+    warnings = []
+    if warnings_json is not None and warnings_json.is_file():
+        try:
+            wpayload = json.loads(warnings_json.read_text(encoding="utf-8"))
+            raw = wpayload.get("warnings", []) if isinstance(wpayload, dict) else []
+            if isinstance(raw, list):
+                warnings = raw
+        except (OSError, ValueError) as e:
+            print("WARNING: could not read %s (%s); view.json warnings omitted."
+                  % (warnings_json, e), file=sys.stderr)
+    payload["warnings"] = warnings
+
     view_json_path.write_text(
         json.dumps(payload, indent=2, allow_nan=False) + "\n",
         encoding="utf-8",
     )
-    print("[VIEW] merged %d reps into %s" % (len(payload["reps"]), view_json_path),
+    print("[VIEW] merged %d reps + %d warning(s) into %s"
+          % (len(payload["reps"]), len(warnings), view_json_path),
           flush=True)
 
 
@@ -501,6 +514,7 @@ def main():
     merge_reps_into_view_json(
         view_json_path=pairwise_out / ("%s_view.json" % uniprot),
         rep_info_tsv=analysis_dir / ("%s_rep_info.tsv" % uniprot),
+        warnings_json=analysis_dir / ("%s_pipeline_warnings.json" % uniprot),
     )
 
     if run_legacy_decision:
