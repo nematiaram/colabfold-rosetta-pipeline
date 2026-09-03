@@ -271,29 +271,32 @@ def write_view_json(
     Shape is contract; bump VIEW_SCHEMA_VERSION on breaking changes.
     """
     residues = []
-    for _, r in reporters.sort_values("max_dNC", ascending=False).iterrows():
-        residues.append({
-            "residue": _clean(r["Residue"]),
-            "resname": _clean(r["resname"]),
-            "resnum": _clean(r["resnum"]),
-            "nc": [_clean(r["nc_rep1"]), _clean(r["nc_rep2"]), _clean(r["nc_rep3"])],
-            "deltas": {
-                "1v2": _clean(r["d12_rep1_vs_rep2"]),
-                "1v3": _clean(r["d13_rep1_vs_rep3"]),
-                "2v3": _clean(r["d23_rep2_vs_rep3"]),
-            },
-            "max_dNC": _clean(r["max_dNC"]),
-            "clears": {
-                "1v2": bool(r["clears_1-2"]),
-                "1v3": bool(r["clears_1-3"]),
-                "2v3": bool(r["clears_2-3"]),
-            },
-            "strongest_pair": _clean(r["strongest_category"]),
-            "strongest_dNC": _clean(r["strongest_dNC"]),
-            "more_labeled_rep": _clean(r["more_labeled_rep"]),
-            "preferred_reagent": _clean(r["preferred_reagent"]),
-            "all_reagents": _split_reagents(r["all_reagents"]),
-        })
+    # Empty reporter tables have no columns (no rows were appended), so sorting
+    # on max_dNC would KeyError — a valid outcome when nothing clears T.
+    if not reporters.empty:
+        for _, r in reporters.sort_values("max_dNC", ascending=False).iterrows():
+            residues.append({
+                "residue": _clean(r["Residue"]),
+                "resname": _clean(r["resname"]),
+                "resnum": _clean(r["resnum"]),
+                "nc": [_clean(r["nc_rep1"]), _clean(r["nc_rep2"]), _clean(r["nc_rep3"])],
+                "deltas": {
+                    "1v2": _clean(r["d12_rep1_vs_rep2"]),
+                    "1v3": _clean(r["d13_rep1_vs_rep3"]),
+                    "2v3": _clean(r["d23_rep2_vs_rep3"]),
+                },
+                "max_dNC": _clean(r["max_dNC"]),
+                "clears": {
+                    "1v2": bool(r["clears_1-2"]),
+                    "1v3": bool(r["clears_1-3"]),
+                    "2v3": bool(r["clears_2-3"]),
+                },
+                "strongest_pair": _clean(r["strongest_category"]),
+                "strongest_dNC": _clean(r["strongest_dNC"]),
+                "more_labeled_rep": _clean(r["more_labeled_rep"]),
+                "preferred_reagent": _clean(r["preferred_reagent"]),
+                "all_reagents": _split_reagents(r["all_reagents"]),
+            })
 
     reagents = []
     for _, r in counts.iterrows():
