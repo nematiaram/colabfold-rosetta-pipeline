@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import glob
+import json
 import os
 import shutil
 import subprocess
@@ -398,15 +399,21 @@ def main():
 
     # Estimate chain length from the first model (CA count). Short peptides are
     # coil-dominated; applying the paper 60% filter empties the ensemble.
+    pipeline_warnings = []
     n_res = int(get_ca_coords(pdb_paths[0]).shape[0])
     if args.max_coil_fraction < 1.0 and n_res < MIN_RESIDUES_FOR_COIL_FILTER:
-        print(
-            f"[{args.uniprot}] NOTE: sequence has {n_res} residues "
-            f"(<{MIN_RESIDUES_FOR_COIL_FILTER}); DSSP coil filter is not "
-            f"applicable and will be skipped. Use a longer protein to apply "
-            f"the paper 0.60 cutoff.",
-            flush=True,
+        warn_msg = (
+            f"Sequence has {n_res} residues "
+            f"(<{MIN_RESIDUES_FOR_COIL_FILTER}); DSSP coil filter skipped "
+            f"because short peptides are coil-dominated. Pipeline continues "
+            f"for plumbing/smoke tests only -- results are not scientifically "
+            f"interpretable. Use a longer folded protein for real analysis."
         )
+        print(f"[{args.uniprot}] WARNING: {warn_msg}", flush=True)
+        pipeline_warnings.append({
+            "code": "coil_filter_skipped_short_sequence",
+            "message": warn_msg,
+        })
         args.max_coil_fraction = 1.0
 
     dssp_bin = None
@@ -612,6 +619,13 @@ def main():
     plt.tight_layout()
     plt.savefig(out_dir / f"{args.uniprot}_plddt_vs_rmsd_bestref.png", dpi=300)
     plt.close()
+
+    # Always write (may be empty) so entrypoint can merge into view.json.
+    warnings_path = out_dir / f"{args.uniprot}_pipeline_warnings.json"
+    warnings_path.write_text(
+        json.dumps({"warnings": pipeline_warnings}, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
     print(f"[DONE] Wrote outputs to {out_dir}")
 
