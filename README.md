@@ -750,27 +750,17 @@ corresponding Supporting Information table.
 
 ### Broadly reactive approaches
 
-The current lookup also includes:
+The published panel uses a single hydroxyl-radical category:
 
-- OH-high
 - OH-medium
-- OH-low
-- diazirine
-- CF3
 
-The hydroxyl-radical groups are operational high-, medium-, and low-reactivity
-bins based on published intrinsic amino-acid reactivities.
-
-Current groups are:
+Current OH-medium targets are:
 
 ```text
-OH-high:   Cys, Met, Trp, Tyr, Phe, His, Leu, Ile, Arg
-OH-medium: Lys, Val, Ser, Thr, Pro, Gln, Glu
-OH-low:    Asp, Asn, Ala, Gly
+OH-medium: Trp, Tyr, Phe, His, Leu, Ile, Arg, Lys, Val, Pro
 ```
 
-Diazirine and CF3 are currently mapped to all 20 standard amino acids as broad
-operational mappings for the pipeline.
+Diazirine and CF3 are excluded from the published panel.
 
 These mappings should not be interpreted as implying equal experimental
 reactivity for every amino acid.

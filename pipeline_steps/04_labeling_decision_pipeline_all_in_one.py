@@ -48,7 +48,7 @@ REAGENT_ORDER = [
 REAGENT_TO_STAR = {name: f"*{i+1}" for i, name in enumerate(REAGENT_ORDER)}
 STAR_TO_REAGENT = {v: k for k, v in REAGENT_TO_STAR.items()}
 
-NON_SPECIFIC_PRIORITY = ["OH-high", "OH-medium", "OH-low", "diazirine", "CF3"]
+NON_SPECIFIC_PRIORITY = ["OH-medium"]
 
 COLORS = {
     "bg": "#FBFBFD",
@@ -143,29 +143,19 @@ BUILTIN_SPECIFIC = {
     "MET": ["Iodoacetamide/iodoacetate", "Tetranitromethane", "Iodine"],
 }
 
+# Published panel: single OH-medium category for W,Y,F,H,L,I,R,K,V,P.
+# Diazirine and CF3 are excluded.
 BUILTIN_NONSPEC = {
-    "CYS": ["OH-high", "diazirine"],
-    "TRP": ["OH-high", "diazirine"],
-    "TYR": ["OH-high", "diazirine"],
-    "MET": ["OH-high", "diazirine"],
-    "PHE": ["OH-high", "diazirine"],
-    "HIS": ["OH-high", "diazirine"],
-    "ARG": ["OH-high", "diazirine"],
-    "ILE": ["OH-high", "diazirine"],
-    "LEU": ["OH-high", "diazirine"],
-    "VAL": ["OH-medium", "diazirine"],
-    "PRO": ["OH-medium", "diazirine"],
-    "GLN": ["OH-medium", "diazirine"],
-    "THR": ["OH-medium", "diazirine", "CF3"],
-    "LYS": ["OH-medium", "diazirine"],
-    "SER": ["OH-medium", "diazirine", "CF3"],
-    "GLU": ["OH-medium", "diazirine", "CF3"],
-    "ALA": ["OH-low", "diazirine", "CF3"],
-    "ASP": ["OH-low", "diazirine", "CF3"],
-    "ASN": ["OH-low", "diazirine"],
-    "GLY": ["OH-low", "diazirine", "CF3"],
-    # broad diazirine coverage:
-    "ALL": ["diazirine"],
+    "TRP": ["OH-medium"],
+    "TYR": ["OH-medium"],
+    "PHE": ["OH-medium"],
+    "HIS": ["OH-medium"],
+    "LEU": ["OH-medium"],
+    "ILE": ["OH-medium"],
+    "ARG": ["OH-medium"],
+    "LYS": ["OH-medium"],
+    "VAL": ["OH-medium"],
+    "PRO": ["OH-medium"],
 }
 
 
@@ -232,8 +222,6 @@ def built_in_label_entry(resname: str) -> Dict[str, str]:
     res = normalize_resname(resname)
     specific = BUILTIN_SPECIFIC.get(res, [])
     nonspec = list(BUILTIN_NONSPEC.get(res, []))
-    if "diazirine" not in nonspec and res in AA3_TO_1:
-        nonspec.append("diazirine")
     labels = "; ".join(REAGENT_TO_STAR[x] for x in specific if x in REAGENT_TO_STAR)
     label_non_specific = "; ".join([x for x in NON_SPECIFIC_PRIORITY if x in nonspec] +
                                    [x for x in nonspec if x not in NON_SPECIFIC_PRIORITY])
