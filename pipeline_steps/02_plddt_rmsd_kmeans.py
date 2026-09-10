@@ -12,6 +12,8 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+from matplotlib.ticker import MaxNLocator
 
 # Paper methods: discard models dominated by nonregular SS (C/S/T/unassigned).
 COIL_LIKE = frozenset({"C", "S", "T", " ", "-", ""})
@@ -568,60 +570,105 @@ def main():
         rep_info.insert(4, "coil_fraction", reps_df["coil_fraction"])
     rep_info.to_csv(out_dir / f"{args.uniprot}_rep_info.tsv", sep="\t", index=False)
 
-    plt.figure(figsize=(6, 4))
-    mask_others = df_all["cluster"] != -1
-    plt.scatter(
-        df_all.loc[mask_others, "rmsd_to_best"],
-        df_all.loc[mask_others, "mean_plddt"],
-        c=df_all.loc[mask_others, "cluster"],
-        cmap="tab10",
-        s=10,
-        alpha=0.7,
-    )
+    # Match ALL_11uniprots_plddt_vs_rmsd_bestref.png style.
+    CLUSTER_COLORS = ["#9AA5B8", "#6BC6BE", "#7A96CF"]
+    plt.rcParams.update({
+        "font.family": "sans-serif",
+        "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
+        "font.size": 10,
+        "axes.titlesize": 12,
+        "axes.titleweight": "bold",
+        "axes.labelsize": 11,
+        "axes.labelcolor": "0.15",
+        "axes.edgecolor": "0.25",
+        "xtick.labelsize": 9,
+        "ytick.labelsize": 9,
+        "xtick.color": "0.25",
+        "ytick.color": "0.25",
+        "legend.fontsize": 10,
+        "legend.frameon": False,
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+        "figure.facecolor": "white",
+        "axes.facecolor": "white",
+        "savefig.facecolor": "white",
+    })
 
-    for _, r in reps_df.iterrows():
-        plt.scatter(
-            r["rmsd_to_best"],
-            r["mean_plddt"],
-            s=70,
-            edgecolor="black",
-            facecolor="none",
-            linewidth=1.3,
+    fig, ax = plt.subplots(figsize=(5.2, 4.2))
+    ax.grid(True, which="major", color="0.88", linewidth=0.6, zorder=0)
+    ax.set_axisbelow(True)
+    for spine in ("top", "right"):
+        ax.spines[spine].set_visible(False)
+    for spine in ("left", "bottom"):
+        ax.spines[spine].set_linewidth(0.9)
+        ax.spines[spine].set_color("0.25")
+    ax.tick_params(which="major", direction="out", length=3.5, width=0.8,
+                   colors="0.25", pad=3)
+    ax.xaxis.set_major_locator(MaxNLocator(nbins=6, prune="both"))
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=6, prune="both"))
+
+    others = df_all[df_all["cluster"] >= 0].copy()
+    for cluster_id in sorted(others["cluster"].dropna().astype(int).unique()):
+        sub = others[others["cluster"].astype(int) == cluster_id]
+        ax.scatter(
+            sub["rmsd_to_best"],
+            sub["mean_plddt"],
+            s=10,
+            color=CLUSTER_COLORS[int(cluster_id) % len(CLUSTER_COLORS)],
+            alpha=0.45,
+            linewidths=0,
+            rasterized=True,
+            zorder=2,
         )
-        plt.text(
-            r["rmsd_to_best"],
-            r["mean_plddt"] + 0.5,
-            r["rep_id"],
-            ha="center",
-            va="bottom",
-            fontsize=8,
-        )
+
+    ax.scatter(
+        reps_df["rmsd_to_best"],
+        reps_df["mean_plddt"],
+        marker="*",
+        s=70,
+        facecolor="white",
+        edgecolor="black",
+        linewidths=0.9,
+        zorder=4,
+    )
 
     r_best = df_best.iloc[0]
-    plt.scatter(
-        r_best["rmsd_to_best"],
-        r_best["mean_plddt"],
-        marker="*",
-        s=140,
-        edgecolor="black",
-        facecolor="yellow",
-        linewidth=1.2,
-    )
-    plt.text(
-        r_best["rmsd_to_best"],
-        r_best["mean_plddt"] + 0.5,
-        "best_ref",
-        ha="center",
-        va="bottom",
-        fontsize=8,
+    ax.scatter(
+        [r_best["rmsd_to_best"]],
+        [r_best["mean_plddt"]],
+        marker="X",
+        s=70,
+        color="black",
+        linewidths=1.0,
+        zorder=5,
     )
 
-    plt.xlabel("RMSD to best predicted (Å)")
-    plt.ylabel("Mean pLDDT")
-    plt.title(f"{args.uniprot} – pLDDT vs RMSD (reference excluded from clustering)")
-    plt.tight_layout()
-    plt.savefig(out_dir / f"{args.uniprot}_plddt_vs_rmsd_bestref.png", dpi=300)
-    plt.close()
+    ax.set_title(args.uniprot, pad=6)
+    ax.set_xlabel(r"C$\alpha$ RMSD to best-pLDDT model ($\mathrm{\AA}$)")
+    ax.set_ylabel("Mean per-residue pLDDT")
+    ax.margins(x=0.06, y=0.10)
+
+    handles = [
+        Line2D([0], [0], marker="X", linestyle="", color="black",
+               markersize=10, label="Reference"),
+        Line2D([0], [0], marker="*", linestyle="", markerfacecolor="white",
+               markeredgecolor="black", markeredgewidth=0.9,
+               markersize=11, label="Reps"),
+        Line2D([0], [0], marker="o", linestyle="", color=CLUSTER_COLORS[0],
+               alpha=0.9, markersize=9, label="Cluster 1"),
+        Line2D([0], [0], marker="o", linestyle="", color=CLUSTER_COLORS[1],
+               alpha=0.9, markersize=9, label="Cluster 2"),
+        Line2D([0], [0], marker="o", linestyle="", color=CLUSTER_COLORS[2],
+               alpha=0.9, markersize=9, label="Cluster 3"),
+    ]
+    ax.legend(handles=handles, loc="best", frameon=False)
+
+    fig.tight_layout()
+    out_png = out_dir / f"{args.uniprot}_plddt_vs_rmsd_bestref.png"
+    out_pdf = out_dir / f"{args.uniprot}_plddt_vs_rmsd_bestref.pdf"
+    fig.savefig(out_png, dpi=400, bbox_inches="tight")
+    fig.savefig(out_pdf, bbox_inches="tight")
+    plt.close(fig)
 
     # Always write (may be empty) so entrypoint can merge into view.json.
     warnings_path = out_dir / f"{args.uniprot}_pipeline_warnings.json"
