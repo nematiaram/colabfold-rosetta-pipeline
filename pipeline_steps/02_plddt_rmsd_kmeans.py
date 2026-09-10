@@ -15,7 +15,6 @@ import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 from matplotlib.ticker import MaxNLocator
 
-# Paper methods: discard models dominated by nonregular SS (C/S/T/unassigned).
 COIL_LIKE = frozenset({"C", "S", "T", " ", "-", ""})
 
 
@@ -77,7 +76,7 @@ def _maybe_set_libcifpp_data_dir() -> None:
         Path("/usr/share/libcifpp"),
         Path("/usr/local/share/libcifpp"),
     ]
-    # Common conda-forge layout next to the dssp binary.
+    
     dssp = shutil.which("mkdssp") or shutil.which("dssp")
     if dssp:
         prefix = Path(dssp).resolve().parent.parent
@@ -112,10 +111,7 @@ def coil_fraction(pdb_path: str, dssp_bin: Optional[str] = None) -> float:
         out_path = tmp_dir / "out.dssp"
         write_dssp_friendly_pdb(pdb_path, friendly)
 
-        # 1. DSSP 4 with the flag that forces the classic text format we prefer.
-        # 2. Default modern invocation (DSSP 4 will emit mmCIF here; the parser
-        #    detects and handles it).
-        # 3. Legacy CMBI -i/-o form for older binaries.
+
         attempts = [
             [bin_path, "--output-format", "dssp", str(friendly), str(out_path)],
             [bin_path, str(friendly), str(out_path)],
