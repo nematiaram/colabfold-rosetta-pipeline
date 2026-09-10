@@ -48,7 +48,7 @@ REAGENT_ORDER = [
 REAGENT_TO_STAR = {name: f"*{i+1}" for i, name in enumerate(REAGENT_ORDER)}
 STAR_TO_REAGENT = {v: k for k, v in REAGENT_TO_STAR.items()}
 
-NON_SPECIFIC_PRIORITY = ["OH-high", "OH-medium", "OH-low"]
+NON_SPECIFIC_PRIORITY = ["OH-medium"]
 
 COLORS = {
     "bg": "#FBFBFD",
@@ -144,26 +144,16 @@ BUILTIN_SPECIFIC = {
 }
 
 BUILTIN_NONSPEC = {
-    "CYS": ["OH-high"],
-    "TRP": ["OH-high"],
-    "TYR": ["OH-high"],
-    "MET": ["OH-high"],
-    "PHE": ["OH-high"],
-    "HIS": ["OH-high"],
-    "ARG": ["OH-high"],
-    "ILE": ["OH-high"],
-    "LEU": ["OH-high"],
+    "TRP": ["OH-medium"],
+    "TYR": ["OH-medium"],
+    "PHE": ["OH-medium"],
+    "HIS": ["OH-medium"],
+    "LEU": ["OH-medium"],
+    "ILE": ["OH-medium"],
+    "ARG": ["OH-medium"],
+    "LYS": ["OH-medium"],
     "VAL": ["OH-medium"],
     "PRO": ["OH-medium"],
-    "GLN": ["OH-medium"],
-    "THR": ["OH-medium"],
-    "LYS": ["OH-medium"],
-    "SER": ["OH-medium"],
-    "GLU": ["OH-medium"],
-    "ALA": ["OH-low"],
-    "ASP": ["OH-low"],
-    "ASN": ["OH-low"],
-    "GLY": ["OH-low"],
 }
 
 
