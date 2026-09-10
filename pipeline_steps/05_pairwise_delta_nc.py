@@ -15,7 +15,12 @@ from pathlib import Path
 
 import pandas as pd
 
-from reagent_map import assign, normalize_aa
+from reagent_map import (
+    apply_custom_reagents,
+    assign,
+    load_custom_reagents,
+    normalize_aa,
+)
 
 PAIRS = [
     ("d12", "1-2", "more_exposed_in_12"),
@@ -265,6 +270,7 @@ def write_view_json(
     uid: str,
     threshold: float,
     path: Path,
+    custom_reagents=None,
 ) -> None:
     """Emit a display-ready JSON for the view page.
 
@@ -338,10 +344,26 @@ def write_view_json(
         "above_threshold_residues": residues,
         "reagent_target_counts": reagents,
         "best_per_pair": best_per_pair,
+        "custom_reagents": custom_reagents or [],
     }
 
     with path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, allow_nan=False)
+
+
+def write_custom_reagents_audit(uid: str, entries, path: Path) -> None:
+    rows = []
+    for e in entries or []:
+        rows.append({
+            "uniprot": uid,
+            "reagent": e["name"],
+            "residues": ";".join(e["residues"]),
+            "n_residues": len(e["residues"]),
+        })
+    pd.DataFrame(
+        rows,
+        columns=["uniprot", "reagent", "residues", "n_residues"],
+    ).to_csv(path, sep="\t", index=False)
 
 
 def main():
@@ -351,11 +373,32 @@ def main():
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--threshold", type=float, default=5.0,
                     help="Minimum |ΔNC| for a reporter (default: 5).")
+    ap.add_argument(
+        "--custom-reagents",
+        default="",
+        help="Optional JSON file of extra reagents "
+             "[{name, residues: [AA,...]}, ...] added on top of the SI Table S1 map.",
+    )
     args = ap.parse_args()
+
+    if args.threshold <= 0:
+        raise SystemExit("ERROR: --threshold must be > 0")
 
     uid = args.uniprot
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    custom_entries = []
+    if args.custom_reagents:
+        custom_path = Path(args.custom_reagents)
+        if not custom_path.is_file():
+            raise SystemExit("ERROR: --custom-reagents file not found: %s" % custom_path)
+        custom_entries = apply_custom_reagents(load_custom_reagents(custom_path))
+        print("[custom reagents] applied %d user reagent(s) from %s"
+              % (len(custom_entries), custom_path), flush=True)
+    write_custom_reagents_audit(
+        uid, custom_entries, out_dir / f"{uid}_custom_reagents_used.tsv"
+    )
 
     df = annotate(read_nc(Path(args.nc_tsv)))
     df.to_csv(out_dir / f"{uid}_all_residues_with_pair_diffs.tsv", sep="\t", index=False)
@@ -391,6 +434,7 @@ def main():
         uid=uid,
         threshold=args.threshold,
         path=out_dir / f"{uid}_view.json",
+        custom_reagents=custom_entries,
     )
 
     print(f"[DONE] {uid}: {len(reporters)} reporters at T={args.threshold}")

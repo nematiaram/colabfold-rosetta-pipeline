@@ -484,7 +484,10 @@ def main():
         "ROSETTA_BIN", "/opt/conda/bin/per_residue_solvent_exposure.linuxgccrelease")
     threads_per_worker = int(os.environ.get("THREADS_PER_WORKER", "1"))
     nc_method = os.environ.get("NC_METHOD", "cone")
+    # Defaults; job_meta.env (from job.json) overrides below after prepare_input.
     pairwise_threshold = os.environ.get("PAIRWISE_THRESHOLD", "5")
+    n_clusters = os.environ.get("N_CLUSTERS") or os.environ.get("CLUSTER_K") or "3"
+    custom_reagents_json = os.environ.get("CUSTOM_REAGENTS_JSON", "").strip()
     # Paper default: discard models with >60% coil-like DSSP (C/S/T/unassigned).
     # Set MAX_COIL_FRACTION=1.0 to disable.
     max_coil_fraction = os.environ.get("MAX_COIL_FRACTION", "0.60")
@@ -518,6 +521,33 @@ def main():
     except KeyError as e:
         raise RuntimeError("Required variable %r missing from %s" % (e.args[0], meta))
 
+    # job.json wins over container env for these analysis knobs.
+    if meta_vars.get("PAIRWISE_THRESHOLD"):
+        pairwise_threshold = meta_vars["PAIRWISE_THRESHOLD"]
+    if meta_vars.get("N_CLUSTERS"):
+        n_clusters = meta_vars["N_CLUSTERS"]
+    if meta_vars.get("CUSTOM_REAGENTS_JSON"):
+        custom_reagents_json = meta_vars["CUSTOM_REAGENTS_JSON"].strip()
+
+    try:
+        k = int(n_clusters)
+    except ValueError:
+        raise SystemExit("ERROR: N_CLUSTERS / n_clusters must be an integer, got %r"
+                         % n_clusters)
+    if k != 3:
+        raise SystemExit(
+            "ERROR: n_clusters=%s is not supported yet (pairwise NC requires "
+            "exactly 3 cluster representatives). Set n_clusters=3."
+            % k
+        )
+    try:
+        thr = float(pairwise_threshold)
+    except ValueError:
+        raise SystemExit("ERROR: PAIRWISE_THRESHOLD must be a number, got %r"
+                         % pairwise_threshold)
+    if thr <= 0:
+        raise SystemExit("ERROR: PAIRWISE_THRESHOLD must be > 0, got %s" % thr)
+
     pred_dir = work_dir / "colabfold"
     analysis_dir = work_dir / "analysis"
     rosetta_out = work_dir / "rosetta"
@@ -526,8 +556,12 @@ def main():
     for d in (pred_dir, analysis_dir, rosetta_out, pairwise_out, decision_out):
         d.mkdir(parents=True, exist_ok=True)
 
-    print("UNIPROT=%s NUM_SEEDS=%d MODELS_PER_SEED=%d NC_METHOD=%s"
-          % (uniprot, num_seeds, models_per_seed, nc_method), flush=True)
+    print("UNIPROT=%s NUM_SEEDS=%d MODELS_PER_SEED=%d NC_METHOD=%s "
+          "N_CLUSTERS=%d PAIRWISE_THRESHOLD=%s"
+          % (uniprot, num_seeds, models_per_seed, nc_method, k, pairwise_threshold),
+          flush=True)
+    if custom_reagents_json:
+        print("CUSTOM_REAGENTS_JSON=%s" % custom_reagents_json, flush=True)
 
     run_colabfold(work_dir, pred_dir, fasta, uniprot, num_seeds, models_per_seed,
                   args.ncpus, threads_per_worker, colabfold_bin,
@@ -535,6 +569,7 @@ def main():
 
     run([sys.executable, SCRIPTS_DIR / "02_plddt_rmsd_kmeans.py",
          "--uniprot", uniprot, "--pred-dir", pred_dir, "--out-dir", analysis_dir,
+         "--k", str(k),
          "--max-coil-fraction", str(max_coil_fraction)])
 
     rep_info = analysis_dir / ("%s_rep_info.tsv" % uniprot)
@@ -570,10 +605,13 @@ def main():
          "--rep-info", rep_info,
          "--out-dir", rosetta_out, "--rosetta-bin", rosetta_bin, "--method", nc_method])
 
-    run([sys.executable, SCRIPTS_DIR / "05_pairwise_delta_nc.py",
-         "--uniprot", uniprot,
-         "--nc-tsv", rosetta_out / ("%s_rosetta_nc.tsv" % uniprot),
-         "--out-dir", pairwise_out, "--threshold", pairwise_threshold])
+    step05 = [sys.executable, SCRIPTS_DIR / "05_pairwise_delta_nc.py",
+              "--uniprot", uniprot,
+              "--nc-tsv", rosetta_out / ("%s_rosetta_nc.tsv" % uniprot),
+              "--out-dir", pairwise_out, "--threshold", str(pairwise_threshold)]
+    if custom_reagents_json:
+        step05 += ["--custom-reagents", custom_reagents_json]
+    run(step05)
 
     merge_reps_into_view_json(
         view_json_path=view_json_path,
@@ -594,7 +632,8 @@ def main():
 
     print("[DONE] Pipeline outputs in: %s" % work_dir)
     print("  rosetta/   NC (%s)" % nc_method)
-    print("  pairwise/  delta-NC reporters + reagent targets (T=%s)" % pairwise_threshold)
+    print("  pairwise/  delta-NC reporters + reagent targets (T=%s, k=%d)"
+          % (pairwise_threshold, k))
     print("  pairwise/%s_view.json  view-page JSON (schema v1)" % uniprot)
 
 
