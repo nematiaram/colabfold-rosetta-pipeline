@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """Canonical residue-reagent lookup used for reporter assignment.
+
 For the published panel, hydroxyl-radical coverage is represented by a single
 OH-medium category applied only to Trp, Tyr, Phe, His, Leu, Ile, Arg, Lys,
 Val, and Pro. Diazirine and CF3 are excluded from the published panel.
 """
+
 AA3_TO_1 = {
     "ALA": "A", "ARG": "R", "ASN": "N", "ASP": "D", "CYS": "C",
     "GLN": "Q", "GLU": "E", "GLY": "G", "HIS": "H", "ILE": "I",
     "LEU": "L", "LYS": "K", "MET": "M", "PHE": "F", "PRO": "P",
     "SER": "S", "THR": "T", "TRP": "W", "TYR": "Y", "VAL": "V",
 }
+
 REAGENT_ORDER = [
     "DEPC",
     "N-acetylimidazole",
@@ -34,8 +37,10 @@ REAGENT_ORDER = [
 ]
 NONSPEC_ORDER = ["OH-medium"]
 NONSPEC = set(NONSPEC_ORDER)
+
 # Published broad OH coverage uses a single medium category only.
 OH_MEDIUM = {"TRP", "TYR", "PHE", "HIS", "LEU", "ILE", "ARG", "LYS", "VAL", "PRO"}
+
 SPECIFIC = {
     "HIS": ["DEPC", "N-bromosuccinimide (NBS)", "Iodine"],
     "LYS": ["DEPC", "N-acetylimidazole", "Acetic anhydride",
@@ -53,6 +58,7 @@ SPECIFIC = {
     "TRP": ["N-bromosuccinimide (NBS)", "Koshland's reagent (HNB bromide)",
             "O-nitrophenylsulfenyl chloride"],
 }
+
 S2_ROWS = [
     ("section", "Residue-selective", "", "", ""),
     ("row", "DEPC", "His, Lys, Cys, Ser, Thr, Tyr",
@@ -121,6 +127,8 @@ S2_ROWS = [
      "Single OH category used in this work",
      "User-defined panel"),
 ]
+
+
 def normalize_aa(resname):
     s = str(resname).strip().upper()
     if s in AA3_TO_1:
@@ -130,16 +138,22 @@ def normalize_aa(resname):
         if s in inv:
             return inv[s]
     return s
+
+
 def specific_for(aa):
     aa = normalize_aa(aa)
     names = SPECIFIC.get(aa, [])
     return [r for r in REAGENT_ORDER if r in names]
+
+
 def nonspec_for(aa):
     aa = normalize_aa(aa)
     out = []
     if aa in OH_MEDIUM:
         out.append("OH-medium")
     return out
+
+
 def assign(resname):
     spec = specific_for(resname)
     ns = nonspec_for(resname)
@@ -159,3 +173,106 @@ def assign(resname):
         "labels": labels,
         "label_non_specific": "; ".join(ns),
     }
+
+
+def _parse_residue_token(token):
+    """Normalize a user residue token (1-letter or 3-letter) to AA3."""
+    aa = normalize_aa(token)
+    if aa not in AA3_TO_1:
+        raise ValueError(
+            "Unknown residue type %r (use 1-letter or 3-letter amino-acid codes)"
+            % (token,)
+        )
+    return aa
+
+
+def parse_custom_reagent_entry(raw):
+    """Validate one custom reagent dict -> {name, residues: [AA3,...]}."""
+    if not isinstance(raw, dict):
+        raise ValueError("Each custom reagent must be an object with name and residues")
+    name = str(raw.get("name", "")).strip()
+    if not name:
+        raise ValueError("Custom reagent is missing a non-empty 'name'")
+    residues_raw = raw.get("residues", None)
+    if residues_raw is None:
+        raise ValueError("Custom reagent %r is missing 'residues'" % name)
+    if isinstance(residues_raw, str):
+        parts = [p.strip() for p in residues_raw.replace(";", ",").split(",")]
+        residues_raw = [p for p in parts if p]
+    if not isinstance(residues_raw, (list, tuple)) or not residues_raw:
+        raise ValueError(
+            "Custom reagent %r must list one or more residues" % name
+        )
+    residues = []
+    seen = set()
+    for tok in residues_raw:
+        aa = _parse_residue_token(tok)
+        if aa not in seen:
+            residues.append(aa)
+            seen.add(aa)
+    return {"name": name, "residues": residues}
+
+
+def load_custom_reagents(path_or_list):
+    """Load custom reagents from a JSON path or an in-memory list/dict.
+
+    Accepted JSON shapes:
+      [{"name": "MyReagent", "residues": ["LYS", "CYS"]}, ...]
+      {"custom_reagents": [ ... ]}
+      {"name": "...", "residues": [...]}   # single entry
+    """
+    import json
+    from pathlib import Path
+
+    if path_or_list is None:
+        return []
+    if isinstance(path_or_list, (str, Path)):
+        path = Path(path_or_list)
+        with path.open(encoding="utf-8") as f:
+            data = json.load(f)
+    else:
+        data = path_or_list
+
+    if isinstance(data, dict):
+        if "custom_reagents" in data:
+            data = data["custom_reagents"]
+        elif "name" in data and "residues" in data:
+            data = [data]
+        else:
+            raise ValueError(
+                "Custom reagents JSON must be a list, a single "
+                "{name, residues} object, or {custom_reagents: [...]}"
+            )
+    if not isinstance(data, list):
+        raise ValueError("Custom reagents must be a JSON list")
+    return [parse_custom_reagent_entry(entry) for entry in data]
+
+
+def apply_custom_reagents(entries):
+    """Additively merge custom reagents into REAGENT_ORDER and SPECIFIC.
+
+    Built-in reagents are never removed. Custom names are appended to
+    REAGENT_ORDER (after built-ins) and to each targeted residue's SPECIFIC
+    list. Preferred reagent therefore stays the first built-in match when
+    one exists; otherwise the first matching custom reagent is preferred.
+    Returns the normalized entry list that was applied.
+    """
+    global REAGENT_ORDER, SPECIFIC
+
+    if not entries:
+        return []
+
+    applied = []
+    for entry in entries:
+        parsed = parse_custom_reagent_entry(entry) if "residues" in entry else entry
+        name = parsed["name"]
+        residues = parsed["residues"]
+        if name not in REAGENT_ORDER:
+            REAGENT_ORDER = list(REAGENT_ORDER) + [name]
+        for aa in residues:
+            current = list(SPECIFIC.get(aa, []))
+            if name not in current:
+                current.append(name)
+            SPECIFIC[aa] = current
+        applied.append({"name": name, "residues": list(residues)})
+    return applied
