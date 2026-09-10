@@ -1,13 +1,8 @@
 #!/usr/bin/env python3
-"""Canonical residue–reagent lookup used for reporter assignment.
-
-Residue-selective sets are published experimental specificities, not
-encyclopedia side-reaction lists.
-
-Hydroxyl-radical high/medium/low are operational bins defined in this
-study from the Xu & Chance (2005) intrinsic-reactivity order, with
-cutoffs after Arg and after Glu. They are not categories defined by
-Xu & Chance.
+"""Canonical residue-reagent lookup used for reporter assignment.
+For the published panel, hydroxyl-radical coverage is represented by a single
+OH-medium category applied only to Trp, Tyr, Phe, His, Leu, Ile, Arg, Lys,
+Val, and Pro. Diazirine and CF3 are excluded from the published panel.
 """
 AA3_TO_1 = {
     "ALA": "A", "ARG": "R", "ASN": "N", "ASP": "D", "CYS": "C",
@@ -15,8 +10,6 @@ AA3_TO_1 = {
     "LEU": "L", "LYS": "K", "MET": "M", "PHE": "F", "PRO": "P",
     "SER": "S", "THR": "T", "TRP": "W", "TYR": "Y", "VAL": "V",
 }
-
-# Preference among residue-selective reagents when several match.
 REAGENT_ORDER = [
     "DEPC",
     "N-acetylimidazole",
@@ -39,21 +32,10 @@ REAGENT_ORDER = [
     "Tetranitromethane",
     "Iodine",
 ]
-NONSPEC_ORDER = ["OH-high", "OH-medium", "OH-low"]
+NONSPEC_ORDER = ["OH-medium"]
 NONSPEC = set(NONSPEC_ORDER)
-
-# Operational bins from the Xu & Chance 2005 Anal. Chem. 77:4549 order:
-#   Cys > Met > Trp > Tyr > Phe > His > Leu, Ile > Arg, Lys, Val
-#   > Ser, Thr, Pro > Gln, Glu > Asp, Asn > Ala > Gly
-# High  = Cys through Arg (cutoff after Arg)
-# Medium = Lys through Glu (cutoff after Glu)
-# Low   = Asp through Gly
-# These high/medium/low labels are this study's bins, not Xu & Chance categories.
-OH_HIGH = {"CYS", "MET", "TRP", "TYR", "PHE", "HIS", "LEU", "ILE", "ARG"}
-OH_MEDIUM = {"LYS", "VAL", "SER", "THR", "PRO", "GLN", "GLU"}
-OH_LOW = {"ASP", "ASN", "ALA", "GLY"}
-
-# Residue-selective: published experimental targets (typical CL/FP use).
+# Published broad OH coverage uses a single medium category only.
+OH_MEDIUM = {"TRP", "TYR", "PHE", "HIS", "LEU", "ILE", "ARG", "LYS", "VAL", "PRO"}
 SPECIFIC = {
     "HIS": ["DEPC", "N-bromosuccinimide (NBS)", "Iodine"],
     "LYS": ["DEPC", "N-acetylimidazole", "Acetic anhydride",
@@ -71,8 +53,6 @@ SPECIFIC = {
     "TRP": ["N-bromosuccinimide (NBS)", "Koshland's reagent (HNB bromide)",
             "O-nitrophenylsulfenyl chloride"],
 }
-
-# Table S2 display (one row per reagent).
 S2_ROWS = [
     ("section", "Residue-selective", "", "", ""),
     ("row", "DEPC", "His, Lys, Cys, Ser, Thr, Tyr",
@@ -80,7 +60,7 @@ S2_ROWS = [
      "Mendoza & Vachet 2009; Limpikirati et al. 2019"),
     ("row", "EDC/GEE", "Asp, Glu",
      "Carboxyl footprinting",
-     "Zhang et al. 2012; Kaur et al. 2015"),
+     "Zhang et al. 2011; Kaur et al. 2015"),
     ("row", "N-acetylimidazole", "Tyr, Lys",
      "Tyr preferred; Lys also acetylated",
      "Riordan et al. 1965"),
@@ -135,51 +115,32 @@ S2_ROWS = [
     ("row", "Iodine", "Tyr, His",
      "Aromatic iodination",
      "Hughes & Straessle 1950"),
-    ("section", "Broadly reactive", "", "", ""),
-    ("row", "Hydroxyl radical, high",
-     "Cys, Met, Trp, Tyr, Phe, His, Leu, Ile, Arg",
-     "Operational reactivity groups based on the Xu & Chance (2005) intrinsic-reactivity order",
-     "Xu & Chance 2005"),
+    ("section", "Broadly reactive (OH)", "", "", ""),
     ("row", "Hydroxyl radical, medium",
-     "Lys, Val, Ser, Thr, Pro, Gln, Glu",
-     "Operational reactivity groups based on the Xu & Chance (2005) intrinsic-reactivity order",
-     "Xu & Chance 2005"),
-    ("row", "Hydroxyl radical, low",
-     "Asp, Asn, Ala, Gly",
-     "Operational reactivity groups based on the Xu & Chance (2005) intrinsic-reactivity order",
-     "Xu & Chance 2005"),
+     "Trp, Tyr, Phe, His, Leu, Ile, Arg, Lys, Val, Pro",
+     "Single OH category used in this work",
+     "User-defined panel"),
 ]
-
-
-def normalize_aa(resname: str) -> str:
+def normalize_aa(resname):
     s = str(resname).strip().upper()
     if s in AA3_TO_1:
         return s
-    if len(s) == 1 and s in {v: k for k, v in AA3_TO_1.items()}:
+    if len(s) == 1:
         inv = {v: k for k, v in AA3_TO_1.items()}
-        return inv[s]
+        if s in inv:
+            return inv[s]
     return s
-
-
-def specific_for(aa: str):
+def specific_for(aa):
     aa = normalize_aa(aa)
     names = SPECIFIC.get(aa, [])
     return [r for r in REAGENT_ORDER if r in names]
-
-
-def nonspec_for(aa: str):
+def nonspec_for(aa):
     aa = normalize_aa(aa)
     out = []
-    if aa in OH_HIGH:
-        out.append("OH-high")
-    elif aa in OH_MEDIUM:
+    if aa in OH_MEDIUM:
         out.append("OH-medium")
-    elif aa in OH_LOW:
-        out.append("OH-low")
     return out
-
-
-def assign(resname: str) -> dict:
+def assign(resname):
     spec = specific_for(resname)
     ns = nonspec_for(resname)
     if spec:
@@ -189,7 +150,7 @@ def assign(resname: str) -> dict:
     else:
         preferred, tier, has = "", "none", False
     reagents = spec + ns
-    labels = "; ".join(f"*{REAGENT_ORDER.index(r)+1}" for r in spec)
+    labels = "; ".join("*{}".format(REAGENT_ORDER.index(r) + 1) for r in spec)
     return {
         "preferred_reagent": preferred,
         "reagent_tier": tier,
