@@ -73,7 +73,13 @@ Example:
   "job_id": "A0A075Q0W3",
   "sequence": "MKTIIALSYIFCLVFADYKDDDDK",
   "num_seeds": 1000,
-  "models_per_seed": 5
+  "models_per_seed": 5,
+  "pairwise_threshold": 5.0,
+  "n_clusters": 3,
+  "custom_reagents": [
+    {"name": "MyReagent", "residues": ["LYS", "CYS"]},
+    {"name": "Another", "residues": ["W", "Y", "F"]}
+  ]
 }
 ```
 
@@ -152,6 +158,59 @@ The current ColabFold wrapper accepts values from 1 to 5.
 For the benchmark workflow, five models per seed can be combined with 1000 seeds
 to generate approximately 5000 candidate structures.
 
+### Optional analysis fields
+
+#### `pairwise_threshold`
+
+```json
+"pairwise_threshold": 5.0
+```
+
+Minimum absolute pairwise |ΔNC| required for a residue to count as a reporter.
+Must be > 0. Default: `5`.
+
+If omitted, the environment variable `PAIRWISE_THRESHOLD` is used (still defaulting
+to `5`). Values written in `job.json` take precedence over the environment.
+
+#### `n_clusters`
+
+```json
+"n_clusters": 3
+```
+
+Number of RMSD k-means clusters / conformational representatives (`k` in step 02).
+Default: `3`.
+
+The current pairwise NC merge and ranking path requires **exactly 3**
+representatives. Other values are rejected with a clear error until the
+pipeline is generalized.
+
+#### `custom_reagents`
+
+```json
+"custom_reagents": [
+  {"name": "MyReagent", "residues": ["LYS", "CYS"]},
+  {"name": "Another", "residues": ["W", "Y", "F"]}
+]
+```
+
+Optional list of **additional** labeling reagents beyond the built-in SI Table S1
+panel in `pipeline_steps/reagent_map.py`.
+
+Each entry needs:
+
+- `name` — reagent display name
+- `residues` — list of amino acids it labels (1-letter or 3-letter codes)
+
+Custom reagents are **additive only**: built-in mappings are never removed.
+They are appended to each targeted residue's specific-reagent list and appear in
+pairwise tables (`reagent_residue_detail.tsv`, `reagent_target_counts.tsv`,
+`view.json`, etc.). Preferred reagent stays the first built-in match when one
+exists; otherwise the matching custom reagent is preferred.
+
+When present, the prepare step writes `<workdir>/custom_reagents.json` and
+records its path in `job_meta.env` as `CUSTOM_REAGENTS_JSON`.
+
 ### Optional legacy fields
 
 The input parser also accepts:
@@ -168,9 +227,6 @@ These fields are associated with the older Step 4 labeling-decision workflow.
 They are not required for the primary pairwise ΔNC workflow described below.
 
 The legacy workflow is disabled by default.
-
-The reporter threshold is **not** currently a JSON field. It is the environment
-variable `PAIRWISE_THRESHOLD` (default `5`). See [§15](#15-runtime-parameters).
 
 ---
 
@@ -219,6 +275,9 @@ The metadata file contains values used by the remaining pipeline steps, includin
 - `MODELS_PER_SEED`
 - `LABELS_SOURCE`
 - `LABELS_DIR`
+- `PAIRWISE_THRESHOLD`
+- `N_CLUSTERS`
+- `CUSTOM_REAGENTS_JSON`
 
 The user therefore does not need to generate a FASTA file separately when using
 the JSON/ROSIE interface.
@@ -673,17 +732,19 @@ The default reporter threshold is:
 |ΔNC| >= 5
 ```
 
-and is controlled through:
+and can be set either in `job.json`:
 
-```text
-PAIRWISE_THRESHOLD
+```json
+"pairwise_threshold": 5.0
 ```
 
-The default value is:
+or through the environment variable:
 
 ```text
 PAIRWISE_THRESHOLD=5
 ```
+
+`job.json` takes precedence when both are provided.
 
 A residue is evaluated independently for each representative pair.
 
@@ -938,8 +999,10 @@ output/
 │   ├── <UID>_rank_rep2_vs_rep3.tsv
 │   ├── <UID>_reagent_residue_detail.tsv
 │   ├── <UID>_reagent_target_counts.tsv
+│   ├── <UID>_custom_reagents_used.tsv
 │   ├── <UID>_best_per_pair.tsv
-│   └── <UID>_per_pair_recommendation.txt
+│   ├── <UID>_per_pair_recommendation.txt
+│   └── <UID>_view.json
 │
 └── decision/
 ```
@@ -961,7 +1024,9 @@ The JSON/cluster entrypoint supports the following environment variables:
 | `COLABFOLD_BIN` | `colabfold_batch` | ColabFold executable used for both the shared-MSA pass and the workers. |
 | `ROSETTA_BIN` | image-provided path (`/opt/rosetta-bin` in the Dockerfile) | Path to Rosetta `per_residue_solvent_exposure`. |
 | `NC_METHOD` | `cone` | Rosetta neighbor-count method. May be `cone` or `sphere`. |
-| `PAIRWISE_THRESHOLD` | `5` | Minimum absolute pairwise ΔNC required for reporter designation. |
+| `PAIRWISE_THRESHOLD` | `5` | Minimum absolute pairwise ΔNC required for reporter designation. Overridden by `job.json` `pairwise_threshold` when set. |
+| `N_CLUSTERS` / `CLUSTER_K` | `3` | k-means clusters / representatives for step 02. Currently must be `3`. Overridden by `job.json` `n_clusters`. |
+| `CUSTOM_REAGENTS_JSON` | unset | Path to a JSON file of extra reagents `[{name, residues: [...]}, ...]`. Overridden by `job.json` `custom_reagents` (written to `<workdir>/custom_reagents.json`). |
 | `MAX_COIL_FRACTION` | `0.60` | Discard ColabFold models whose DSSP coil-like fraction exceeds this value before clustering. Set `1.0` to disable. Requires `dssp`/`mkdssp` in the image. |
 | `RUN_LEGACY_DECISION` | `0` | Set to `1` to additionally run the older Step 4 decision workflow. |
 
@@ -1140,9 +1205,12 @@ Step 4 is retained only as an optional legacy workflow.
 Notes that are true of the current code and should be kept in mind for ROSIE
 and for manuscript reproduction:
 
-- **`job.json` does not contain the reporter threshold.** `PAIRWISE_THRESHOLD=5`
-  is an environment variable. If a webserver should let users change it, add
-  `"pairwise_threshold": 5` to the JSON schema.
+- **`job.json` can set `pairwise_threshold`, `n_clusters`, and `custom_reagents`.**
+  Environment variables remain available as fallbacks for non-JSON runs.
+- **`n_clusters` must currently be 3.** Pairwise NC merge/ranking still assumes
+  `nc_rep1/2/3` and three pair comparisons.
+- **Custom reagents are additive** to the built-in SI Table S1 map in
+  `reagent_map.py`; they do not replace published reagents.
 - **DSSP coil filter is on by default** (`--max-coil-fraction 0.60` /
   `MAX_COIL_FRACTION`). Models with >60% C/S/T/unassigned DSSP codes are dropped
   before reference selection and clustering. Set `MAX_COIL_FRACTION=1.0` to

@@ -26,6 +26,10 @@ Optional:
   COLABFOLD_EXTRA_ARGS   Extra args for colabfold_batch (quoted string)
   NC_METHOD              Rosetta NC method: cone or sphere (default: cone)
   PAIRWISE_THRESHOLD     Minimum |ΔNC| for reporters (default: 5)
+  N_CLUSTERS             k-means clusters / representatives (default: 3;
+                         currently must be 3 for pairwise NC)
+  CUSTOM_REAGENTS_JSON   Optional JSON file of extra reagents
+                         [{name, residues: [AA,...]}, ...]
   RUN_LEGACY_DECISION    Set to 1 to also run step 04 absolute-gate decision
   LABELS_SOURCE          TSV mapping resname -> labels (legacy step 04 only)
   LABELS_DIR             Directory with *_top10_all_reps.tsv (legacy step 04 only)
@@ -59,6 +63,8 @@ COLABFOLD_NUM_SEEDS="${COLABFOLD_NUM_SEEDS:-300}"
 ROSETTA_BIN="${ROSETTA_BIN:-per_residue_solvent_exposure.linuxgccrelease}"
 NC_METHOD="${NC_METHOD:-cone}"
 PAIRWISE_THRESHOLD="${PAIRWISE_THRESHOLD:-5}"
+N_CLUSTERS="${N_CLUSTERS:-${CLUSTER_K:-3}}"
+CUSTOM_REAGENTS_JSON="${CUSTOM_REAGENTS_JSON:-}"
 RUN_LEGACY_DECISION="${RUN_LEGACY_DECISION:-0}"
 SKIP_COLABFOLD="${SKIP_COLABFOLD:-0}"
 SKIP_CLUSTERING="${SKIP_CLUSTERING:-0}"
@@ -73,6 +79,23 @@ fi
 if [[ "$SKIP_COLABFOLD" != "1" && -z "$FASTA" ]]; then
   echo "ERROR: FASTA is required unless SKIP_COLABFOLD=1." >&2
   usage
+  exit 1
+fi
+if [[ "$N_CLUSTERS" != "3" ]]; then
+  echo "ERROR: N_CLUSTERS=$N_CLUSTERS is not supported yet (pairwise NC requires exactly 3)." >&2
+  exit 1
+fi
+python - "$PAIRWISE_THRESHOLD" <<'PY' || exit 1
+import sys
+try:
+    t = float(sys.argv[1])
+except ValueError:
+    raise SystemExit("ERROR: PAIRWISE_THRESHOLD must be a number")
+if t <= 0:
+    raise SystemExit("ERROR: PAIRWISE_THRESHOLD must be > 0")
+PY
+if [[ -n "$CUSTOM_REAGENTS_JSON" && ! -f "$CUSTOM_REAGENTS_JSON" ]]; then
+  echo "ERROR: CUSTOM_REAGENTS_JSON file not found: $CUSTOM_REAGENTS_JSON" >&2
   exit 1
 fi
 
@@ -118,12 +141,13 @@ else
 fi
 
 if [[ "$SKIP_CLUSTERING" != "1" ]]; then
-  echo "=== Step 2: pLDDT/RMSD clustering ==="
+  echo "=== Step 2: pLDDT/RMSD clustering (k=${N_CLUSTERS}) ==="
   MAX_COIL_FRACTION="${MAX_COIL_FRACTION:-0.60}"
   python "$SCRIPTS_DIR/02_plddt_rmsd_kmeans.py" \
     --uniprot "$UNIPROT" \
     --pred-dir "$PRED_DIR" \
     --out-dir "$ANALYSIS_DIR" \
+    --k "$N_CLUSTERS" \
     --max-coil-fraction "$MAX_COIL_FRACTION"
 else
   echo "=== Step 2: Clustering (skipped) ==="
@@ -138,11 +162,16 @@ python "$SCRIPTS_DIR/03_run_rosetta_nc.py" \
   --method "$NC_METHOD"
 
 echo "=== Step 5: Pairwise ΔNC + reagent mapping (T=${PAIRWISE_THRESHOLD}) ==="
-python "$SCRIPTS_DIR/05_pairwise_delta_nc.py" \
-  --uniprot "$UNIPROT" \
-  --nc-tsv "${ROSETTA_OUT}/${UNIPROT}_rosetta_nc.tsv" \
-  --out-dir "$PAIRWISE_OUT" \
+STEP05_ARGS=(
+  --uniprot "$UNIPROT"
+  --nc-tsv "${ROSETTA_OUT}/${UNIPROT}_rosetta_nc.tsv"
+  --out-dir "$PAIRWISE_OUT"
   --threshold "$PAIRWISE_THRESHOLD"
+)
+if [[ -n "$CUSTOM_REAGENTS_JSON" ]]; then
+  STEP05_ARGS+=(--custom-reagents "$CUSTOM_REAGENTS_JSON")
+fi
+python "$SCRIPTS_DIR/05_pairwise_delta_nc.py" "${STEP05_ARGS[@]}"
 
 if [[ "$RUN_LEGACY_DECISION" == "1" ]]; then
   echo "=== Step 4 (legacy): absolute-gate decision ==="
