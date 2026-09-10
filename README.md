@@ -768,24 +768,27 @@ corresponding Supporting Information table.
 
 ### Broadly reactive approaches
 
-The current lookup also includes:
+The published panel uses a single hydroxyl-radical category:
 
-- OH-high
 - OH-medium
-- OH-low
 
-The hydroxyl-radical groups are operational high-, medium-, and low-reactivity
-bins based on published intrinsic amino-acid reactivities.
-
-Current groups are:
+Current OH-medium targets are:
 
 ```text
-OH-high:   Cys, Met, Trp, Tyr, Phe, His, Leu, Ile, Arg
-OH-medium: Lys, Val, Ser, Thr, Pro, Gln, Glu
-OH-low:    Asp, Asn, Ala, Gly
+OH-medium: Trp, Tyr, Phe, His, Leu, Ile, Arg, Lys, Val, Pro
 ```
 
-Diazirine and CF3 are **not** included in the ROSIE reagent list.
+Diazirine and CF3 are excluded from the published panel.
+
+These mappings should not be interpreted as implying equal experimental
+reactivity for every amino acid.
+
+### User-defined custom reagents
+
+Beyond the built-in panel, users may add reagents in `job.json` (`custom_reagents`)
+or via `CUSTOM_REAGENTS_JSON` / `--custom-reagents`. Each custom reagent is merged
+additively into the lookup for the listed residue types and is included in the
+pairwise reagent tables. See [§2](#2-jobjson-schema).
 
 ---
 
