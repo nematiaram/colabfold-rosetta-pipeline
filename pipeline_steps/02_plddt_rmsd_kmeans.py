@@ -511,17 +511,34 @@ def main():
     if "rep_id_rep" in df_all.columns:
         df_all = df_all.drop(columns=["rep_id_rep"])
 
+    # Round metrics for TSV / view.json UI (full precision kept in memory for clustering).
+    def _round_metric_cols(frame: pd.DataFrame) -> pd.DataFrame:
+        out = frame.copy()
+        if "mean_plddt" in out.columns:
+            out["mean_plddt"] = out["mean_plddt"].round(1)
+        if "rmsd_to_best" in out.columns:
+            out["rmsd_to_best"] = out["rmsd_to_best"].round(2)
+        if "coil_fraction" in out.columns:
+            out["coil_fraction"] = out["coil_fraction"].round(3)
+        return out
+
     # Keep audit columns when present.
     out_cols = ["model", "pdb_path", "mean_plddt", "rmsd_to_best", "cluster", "rep_id"]
     if "coil_fraction" in df_all.columns:
         out_cols.insert(3, "coil_fraction")
-    df_all.to_csv(out_dir / f"{args.uniprot}_plddt_rmsd_bestref.tsv", sep="\t",
-                  columns=[c for c in out_cols if c in df_all.columns], index=False)
+    _round_metric_cols(df_all).to_csv(
+        out_dir / f"{args.uniprot}_plddt_rmsd_bestref.tsv",
+        sep="\t",
+        columns=[c for c in out_cols if c in df_all.columns],
+        index=False,
+    )
 
     rep_info = reps_df[["rep_id", "model", "pdb_path", "mean_plddt", "rmsd_to_best", "cluster"]].copy()
     if "coil_fraction" in reps_df.columns:
         rep_info.insert(4, "coil_fraction", reps_df["coil_fraction"])
-    rep_info.to_csv(out_dir / f"{args.uniprot}_rep_info.tsv", sep="\t", index=False)
+    _round_metric_cols(rep_info).to_csv(
+        out_dir / f"{args.uniprot}_rep_info.tsv", sep="\t", index=False
+    )
 
     plt.figure(figsize=(6, 4))
     mask_others = df_all["cluster"] != -1
