@@ -143,6 +143,8 @@ BUILTIN_SPECIFIC = {
     "MET": ["Iodoacetamide/iodoacetate", "Tetranitromethane", "Iodine"],
 }
 
+# Published panel: single OH-medium category for W,Y,F,H,L,I,R,K,V,P.
+# Diazirine and CF3 are excluded.
 BUILTIN_NONSPEC = {
     "TRP": ["OH-medium"],
     "TYR": ["OH-medium"],
