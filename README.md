@@ -816,13 +816,13 @@ not required for interpreting the complete reporter tables.
 
 - His → DEPC, NBS, iodine
 - Lys → DEPC, N-acetylimidazole, acetic anhydride, succinic anhydride, maleic anhydride, S-methylthioacetimidate
-- Cys → DEPC, iodoacetamide/iodoacetate, acryloyl
+- Cys → DEPC, iodoacetamide/iodoacetate
 - Ser → DEPC
 - Thr → DEPC
-- Tyr → DEPC, N-acetylimidazole, NBS, tetranitromethane, iodine
+- Tyr → DEPC, N-acetylimidazole, NBS, iodine, tetranitromethane
 - Asp/Glu → EDC/GEE
 - Arg → phenylglyoxal, p-hydroxyphenylglyoxal, 2,3-butanedione, 1,2-cyclohexanedione, methylglyoxal, kethoxal
-- Trp → NBS, HNB bromide, NPS-Cl
+- Trp → NBS, HNB, NPS-Cl
 
 The complete mapping and literature basis should be documented in the
 corresponding Supporting Information table.

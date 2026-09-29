@@ -14,6 +14,12 @@ from matplotlib import patches
 from matplotlib.colors import Normalize, to_hex
 from matplotlib import cm
 
+from reagent_map import (
+    OH_MEDIUM,
+    REAGENT_ORDER,
+    SPECIFIC as BUILTIN_SPECIFIC,
+)
+
 
 REPS = ["rep1", "rep2", "rep3"]
 AA3_TO_1 = {
@@ -23,28 +29,6 @@ AA3_TO_1 = {
     "SER": "S", "THR": "T", "TRP": "W", "TYR": "Y", "VAL": "V",
 }
 
-REAGENT_ORDER = [
-    "DEPC",
-    "N-acetylimidazole",
-    "Phenylglyoxal",
-    "p-hydroxyphenylglyoxal",
-    "2,3-butanedione",
-    "1,2-cyclohexanedione",
-    "Methylglyoxal",
-    "Kethoxal",
-    "Iodoacetamide/iodoacetate",
-    "Acryloyl",
-    "Acetic anhydride",
-    "Succinic anhydride",
-    "Maleic anhydride",
-    "S-methylthiocacetimidate",
-    "N-bromosuccinimide (NBS)",
-    "EDC (carbodiimide)",
-    "Koshland's reagent (HNB bromide)",
-    "O-nitrophenylsulfenyl chloride",
-    "Tetranitromethane",
-    "Iodine",
-]
 REAGENT_TO_STAR = {name: f"*{i+1}" for i, name in enumerate(REAGENT_ORDER)}
 STAR_TO_REAGENT = {v: k for k, v in REAGENT_TO_STAR.items()}
 
@@ -68,95 +52,8 @@ COLORS = {
     "grid": "#000000",
 }
 
-# Built-in reagent knowledge from the user's tables/screenshots.
-# These are used only when --labels-source is not provided.
-BUILTIN_SPECIFIC = {
-    "ARG": [
-        "Phenylglyoxal",
-        "p-hydroxyphenylglyoxal",
-        "2,3-butanedione",
-        "1,2-cyclohexanedione",
-        "Methylglyoxal",
-        "Kethoxal",
-        "DEPC",
-        "N-bromosuccinimide (NBS)",
-    ],
-    "ASP": ["EDC (carbodiimide)"],
-    "GLU": ["EDC (carbodiimide)"],
-    "CYS": [
-        "EDC (carbodiimide)",
-        "Iodoacetamide/iodoacetate",
-        "Acryloyl",
-        "Acetic anhydride",
-        "Succinic anhydride",
-        "Maleic anhydride",
-        "Koshland's reagent (HNB bromide)",
-        "N-bromosuccinimide (NBS)",
-        "O-nitrophenylsulfenyl chloride",
-        "Iodine",
-    ],
-    "HIS": [
-        "DEPC",
-        "2,3-butanedione",
-        "Iodoacetamide/iodoacetate",
-        "N-bromosuccinimide (NBS)",
-        "Tetranitromethane",
-        "Iodine",
-    ],
-    "LYS": [
-        "Phenylglyoxal",
-        "2,3-butanedione",
-        "1,2-cyclohexanedione",
-        "Methylglyoxal",
-        "Iodoacetamide/iodoacetate",
-        "Acryloyl",
-        "DEPC",
-        "Acetic anhydride",
-        "Succinic anhydride",
-        "Maleic anhydride",
-        "S-methylthiocacetimidate",
-        "N-bromosuccinimide (NBS)",
-        "N-acetylimidazole",
-    ],
-    "SER": ["DEPC", "N-acetylimidazole"],
-    "THR": ["DEPC", "N-acetylimidazole"],
-    "TRP": [
-        "Koshland's reagent (HNB bromide)",
-        "N-bromosuccinimide (NBS)",
-        "O-nitrophenylsulfenyl chloride",
-        "Tetranitromethane",
-        "Iodine",
-    ],
-    "TYR": [
-        "EDC (carbodiimide)",
-        "Iodoacetamide/iodoacetate",
-        "DEPC",
-        "Acetic anhydride",
-        "Succinic anhydride",
-        "Maleic anhydride",
-        "Koshland's reagent (HNB bromide)",
-        "N-bromosuccinimide (NBS)",
-        "Tetranitromethane",
-        "Iodine",
-        "N-acetylimidazole",
-    ],
-    "MET": ["Iodoacetamide/iodoacetate", "Tetranitromethane", "Iodine"],
-}
-
-# Published panel: single OH-medium category for W,Y,F,H,L,I,R,K,V,P.
-# Diazirine and CF3 are excluded.
-BUILTIN_NONSPEC = {
-    "TRP": ["OH-medium"],
-    "TYR": ["OH-medium"],
-    "PHE": ["OH-medium"],
-    "HIS": ["OH-medium"],
-    "LEU": ["OH-medium"],
-    "ILE": ["OH-medium"],
-    "ARG": ["OH-medium"],
-    "LYS": ["OH-medium"],
-    "VAL": ["OH-medium"],
-    "PRO": ["OH-medium"],
-}
+# Same published panel as pipeline_steps/reagent_map.py (SI Residues used).
+BUILTIN_NONSPEC = {aa: ["OH-medium"] for aa in sorted(OH_MEDIUM)}
 
 
 def normalize_resname(x: object) -> str:
