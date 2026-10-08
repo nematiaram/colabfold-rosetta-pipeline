@@ -595,9 +595,9 @@ analysis/<UID>_rep_info.tsv
 analysis/<UID>_plddt_vs_rmsd_bestref.png
 ```
 
-`<UID>_rep_info.tsv` contains the PDB path, mean pLDDT, RMSD to the reference,
-cluster assignment, and representative identifier for the three selected
-structures.
+`<UID>_rep_info.tsv` is the ROSIE representative-card table: `representative 1/2/3`,
+PDB path, mean pLDDT, RMSD to reference, and cluster. Coil fraction is used to
+filter models but is not written to this file (see `*_dssp_coil_filter.tsv`).
 
 ---
 

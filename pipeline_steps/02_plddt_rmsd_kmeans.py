@@ -469,8 +469,9 @@ def main():
             "message": warn_msg,
         })
         # Empty rep table (headers only) signals entrypoint to soft-complete.
-        rep_cols = ["rep_id", "model", "pdb_path", "mean_plddt", "coil_fraction",
-                    "rmsd_to_best", "cluster"]
+        # coil_fraction is kept in the DSSP audit TSV, not the ROSIE card table.
+        rep_cols = ["rep_id", "model", "pdb_path", "mean_plddt",
+                    "rmsd_to_reference", "cluster"]
         pd.DataFrame(columns=rep_cols).to_csv(
             out_dir / f"{args.uniprot}_rep_info.tsv", sep="\t", index=False
         )
@@ -531,7 +532,7 @@ def main():
         rep_rows.append(sub.iloc[0])
 
     reps_df = pd.DataFrame(rep_rows).reset_index(drop=True)
-    reps_df["rep_id"] = [f"rep_cluster{i+1}" for i in range(len(reps_df))]
+    reps_df["rep_id"] = [f"representative {i+1}" for i in range(len(reps_df))]
 
     # A cluster far from the reference can be a genuine alternative conformation
     # or simply a badly-folded model. Downstream ΔNC cannot tell the difference,
@@ -561,6 +562,8 @@ def main():
             out["mean_plddt"] = out["mean_plddt"].round(1)
         if "rmsd_to_best" in out.columns:
             out["rmsd_to_best"] = out["rmsd_to_best"].round(2)
+        if "rmsd_to_reference" in out.columns:
+            out["rmsd_to_reference"] = out["rmsd_to_reference"].round(2)
         if "coil_fraction" in out.columns:
             out["coil_fraction"] = out["coil_fraction"].round(3)
         return out
@@ -576,9 +579,9 @@ def main():
         index=False,
     )
 
+    # ROSIE cards read this TSV: no coil fraction; display names as requested.
     rep_info = reps_df[["rep_id", "model", "pdb_path", "mean_plddt", "rmsd_to_best", "cluster"]].copy()
-    if "coil_fraction" in reps_df.columns:
-        rep_info.insert(4, "coil_fraction", reps_df["coil_fraction"])
+    rep_info = rep_info.rename(columns={"rmsd_to_best": "rmsd_to_reference"})
     _round_metric_cols(rep_info).to_csv(
         out_dir / f"{args.uniprot}_rep_info.tsv", sep="\t", index=False
     )
@@ -657,7 +660,7 @@ def main():
     )
 
     ax.set_title(args.uniprot, pad=6)
-    ax.set_xlabel(r"C$\alpha$ RMSD to best-pLDDT model ($\mathrm{\AA}$)")
+    ax.set_xlabel(r"C$\alpha$ RMSD to reference ($\mathrm{\AA}$)")
     ax.set_ylabel("Mean per-residue pLDDT")
     ax.margins(x=0.06, y=0.10)
 
