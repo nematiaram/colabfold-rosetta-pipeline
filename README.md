@@ -211,6 +211,10 @@ exists; otherwise the matching custom reagent is preferred.
 When present, the prepare step writes `<workdir>/custom_reagents.json` and
 records its path in `job_meta.env` as `CUSTOM_REAGENTS_JSON`.
 
+`custom_reagents` works in both modes: a full ColabFold run, and an upload-only
+run that skips ColabFold (`predictions_dir` / `skip_colabfold`). Skipping
+prediction does not disable custom reagents.
+
 #### `predictions_dir` / `skip_colabfold`
 
 Users can skip ColabFold and run only reference selection, clustering, Rosetta
@@ -221,7 +225,11 @@ NC, and pairwise analysis on structures they already have:
   "job_id": "MYPROT",
   "predictions_dir": "/data/predictions",
   "pairwise_threshold": 5.0,
-  "n_clusters": 3
+  "n_clusters": 3,
+  "custom_reagents": [
+    {"name": "MyReagent", "residues": ["LYS", "CYS"]},
+    {"name": "Another", "residues": ["W", "Y", "F"]}
+  ]
 }
 ```
 
@@ -233,6 +241,9 @@ present, nested trees such as `worker_0/*.pdb` are flattened into
 At least **4** PDBs are required (one internal reference plus 3 cluster
 representatives). They must be the same protein. `sequence`, `num_seeds`, and
 `models_per_seed` are not required in this mode.
+
+`custom_reagents` is optional here, same as in a ColabFold run. If present, the
+added reagents are still applied in pairwise analysis (step 05).
 
 Alternatively, set `"skip_colabfold": true` and place PDBs in
 `<workdir>/colabfold/` (or set `SKIP_COLABFOLD=1` / `PREDICTIONS_DIR`).
@@ -1241,7 +1252,8 @@ and for manuscript reproduction:
 - **`job.json` can set `pairwise_threshold`, `n_clusters`, `custom_reagents`,
   and `predictions_dir` / `skip_colabfold`.** Environment variables remain
   available as fallbacks for non-JSON runs. `predictions_dir` skips ColabFold
-  and runs analysis on uploaded PDBs (at least 4 models).
+  and runs analysis on uploaded PDBs (at least 4 models). `custom_reagents`
+  still applies in that upload-only mode.
 - **`n_clusters` must currently be 3.** Pairwise NC merge/ranking still assumes
   `nc_rep1/2/3` and three pair comparisons.
 - **Custom reagents are additive** to the built-in SI Table S1 map in
