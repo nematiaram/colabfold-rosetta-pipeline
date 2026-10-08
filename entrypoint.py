@@ -471,6 +471,64 @@ def merge_reps_into_view_json(view_json_path, rep_info_tsv, warnings_json=None):
           flush=True)
 
 
+def _truthy_env(name):
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def collect_prediction_pdbs(src_dir):
+    """Return PDB paths from an uploaded prediction folder.
+
+    Prefers top-level *.pdb (the layout step 02 reads). If none, flatten
+    nested ColabFold trees such as colabfold/worker_0/*.pdb.
+    """
+    src_dir = Path(src_dir)
+    if not src_dir.is_dir():
+        raise SystemExit("ERROR: predictions_dir is not a directory: %s" % src_dir)
+    top = sorted(p for p in src_dir.glob("*.pdb") if p.is_file())
+    if top:
+        return top
+    nested = sorted(p for p in src_dir.rglob("*.pdb") if p.is_file())
+    return nested
+
+
+def stage_uploaded_predictions(src_dir, pred_dir, min_models):
+    """Copy uploaded PDBs into workdir/colabfold/*.pdb and return the count."""
+    src_dir = Path(src_dir).resolve()
+    pred_dir = Path(pred_dir).resolve()
+    pred_dir.mkdir(parents=True, exist_ok=True)
+    pdbs = collect_prediction_pdbs(src_dir)
+    if len(pdbs) < min_models:
+        raise SystemExit(
+            "ERROR: need at least %d predicted PDB files to pick a reference "
+            "and 3 representatives (found %d in %s). Upload more models, or "
+            "include nested worker_*/ folders from a ColabFold run."
+            % (min_models, len(pdbs), src_dir)
+        )
+
+    if src_dir == pred_dir and all(p.parent == pred_dir for p in pdbs):
+        print("[PREDICTIONS] using %d uploaded PDBs in %s" % (len(pdbs), pred_dir),
+              flush=True)
+        return len(pdbs)
+
+    used_names = {p.name for p in pred_dir.glob("*.pdb")}
+    n_copied = 0
+    for src in pdbs:
+        dest_name = src.name
+        if dest_name in used_names:
+            dest_name = "%s_%s" % (src.parent.name, src.name)
+        dest = pred_dir / dest_name
+        if dest.resolve() == src.resolve():
+            used_names.add(dest.name)
+            n_copied += 1
+            continue
+        shutil.copy2(src, dest)
+        used_names.add(dest.name)
+        n_copied += 1
+    print("[PREDICTIONS] staged %d uploaded PDBs into %s (skipping ColabFold)"
+          % (n_copied, pred_dir), flush=True)
+    return n_copied
+
+
 def main():
     args = parse_args()
     work_dir = args.workdir.resolve()
@@ -563,9 +621,24 @@ def main():
     if custom_reagents_json:
         print("CUSTOM_REAGENTS_JSON=%s" % custom_reagents_json, flush=True)
 
-    run_colabfold(work_dir, pred_dir, fasta, uniprot, num_seeds, models_per_seed,
-                  args.ncpus, threads_per_worker, colabfold_bin,
-                  num_workers=num_workers)
+    skip_colabfold = (
+        meta_vars.get("SKIP_COLABFOLD", "").strip() == "1"
+        or _truthy_env("SKIP_COLABFOLD")
+    )
+    predictions_dir = (
+        meta_vars.get("PREDICTIONS_DIR", "").strip()
+        or os.environ.get("PREDICTIONS_DIR", "").strip()
+    )
+    if predictions_dir:
+        skip_colabfold = True
+
+    if skip_colabfold:
+        src = Path(predictions_dir) if predictions_dir else pred_dir
+        stage_uploaded_predictions(src, pred_dir, min_models=k + 1)
+    else:
+        run_colabfold(work_dir, pred_dir, fasta, uniprot, num_seeds, models_per_seed,
+                      args.ncpus, threads_per_worker, colabfold_bin,
+                      num_workers=num_workers)
 
     run([sys.executable, SCRIPTS_DIR / "02_plddt_rmsd_kmeans.py",
          "--uniprot", uniprot, "--pred-dir", pred_dir, "--out-dir", analysis_dir,

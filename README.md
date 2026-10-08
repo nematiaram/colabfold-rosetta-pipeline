@@ -211,6 +211,36 @@ exists; otherwise the matching custom reagent is preferred.
 When present, the prepare step writes `<workdir>/custom_reagents.json` and
 records its path in `job_meta.env` as `CUSTOM_REAGENTS_JSON`.
 
+#### `predictions_dir` / `skip_colabfold`
+
+Users can skip ColabFold and run only reference selection, clustering, Rosetta
+NC, and pairwise analysis on structures they already have:
+
+```json
+{
+  "job_id": "MYPROT",
+  "predictions_dir": "/data/predictions",
+  "pairwise_threshold": 5.0,
+  "n_clusters": 3
+}
+```
+
+`predictions_dir` is a folder of predicted PDBs (AlphaFold/ColabFold-style,
+with pLDDT in the CA B-factor). Top-level `*.pdb` files are used; if none are
+present, nested trees such as `worker_0/*.pdb` are flattened into
+`<workdir>/colabfold/`.
+
+At least **4** PDBs are required (one internal reference plus 3 cluster
+representatives). They must be the same protein. `sequence`, `num_seeds`, and
+`models_per_seed` are not required in this mode.
+
+Alternatively, set `"skip_colabfold": true` and place PDBs in
+`<workdir>/colabfold/` (or set `SKIP_COLABFOLD=1` / `PREDICTIONS_DIR`).
+
+ROSIE should mount the uploaded folder into the container and put that path in
+`predictions_dir`. The website still runs steps 2–5: DSSP coil filter, best-pLDDT
+reference, k-means representatives, cone NC, and reporter mapping.
+
 ### Optional legacy fields
 
 The input parser also accepts:
@@ -238,12 +268,9 @@ The first internal program is:
 pipeline_steps/00_prepare_input.py
 ```
 
-It reads `job.json` and verifies that the following fields are present:
-
-- `job_id`
-- `sequence`
-- `num_seeds`
-- `models_per_seed`
+It reads `job.json` and verifies that `job_id` is present. For a ColabFold
+run it also requires `sequence`, `num_seeds`, and `models_per_seed`. Those
+three are optional when `predictions_dir` or `skip_colabfold` is set.
 
 It then creates:
 
@@ -1030,6 +1057,8 @@ The JSON/cluster entrypoint supports the following environment variables:
 | `PAIRWISE_THRESHOLD` | `5` | Minimum absolute pairwise ΔNC required for reporter designation. Overridden by `job.json` `pairwise_threshold` when set. |
 | `N_CLUSTERS` / `CLUSTER_K` | `3` | k-means clusters / representatives for step 02. Currently must be `3`. Overridden by `job.json` `n_clusters`. |
 | `CUSTOM_REAGENTS_JSON` | unset | Path to a JSON file of extra reagents `[{name, residues: [...]}, ...]`. Overridden by `job.json` `custom_reagents` (written to `<workdir>/custom_reagents.json`). |
+| `SKIP_COLABFOLD` | `0` | Set to `1` to skip prediction and analyze PDBs already in `<workdir>/colabfold/` (or `PREDICTIONS_DIR`). Overridden by `job.json` `skip_colabfold` / `predictions_dir`. |
+| `PREDICTIONS_DIR` | unset | Folder of uploaded PDBs. Copied into `<workdir>/colabfold/`. Overridden by `job.json` `predictions_dir`. |
 | `MAX_COIL_FRACTION` | `0.60` | Discard ColabFold models whose DSSP coil-like fraction exceeds this value before clustering. Set `1.0` to disable. Requires `dssp`/`mkdssp` in the image. |
 | `RUN_LEGACY_DECISION` | `0` | Set to `1` to additionally run the older Step 4 decision workflow. |
 
@@ -1139,13 +1168,16 @@ docker run --rm \
 
 ## 19. Running from existing predictions
 
-The repository also contains:
+The JSON/ROSIE entrypoint accepts an uploaded prediction folder via
+`job.json` `predictions_dir` (see [§2](#2-jobjson-schema)). That is the
+website path: skip ColabFold, find the reference, cluster into 3
+representatives, run Rosetta NC, and write pairwise reporters.
+
+For command-line development the repository also contains:
 
 ```text
 run_from_predictions.sh
 ```
-
-for development or testing when ColabFold predictions already exist.
 
 The script expects:
 
@@ -1153,10 +1185,8 @@ The script expects:
 <workdir>/colabfold/*.pdb
 ```
 
-and skips the ColabFold-generation step before continuing with clustering,
-Rosetta NC, and pairwise analysis.
-
-The JSON `entrypoint.py` workflow should remain the primary interface for ROSIE.
+and sets `SKIP_COLABFOLD=1` before continuing with clustering, Rosetta NC,
+and pairwise analysis.
 
 ---
 
@@ -1208,8 +1238,10 @@ Step 4 is retained only as an optional legacy workflow.
 Notes that are true of the current code and should be kept in mind for ROSIE
 and for manuscript reproduction:
 
-- **`job.json` can set `pairwise_threshold`, `n_clusters`, and `custom_reagents`.**
-  Environment variables remain available as fallbacks for non-JSON runs.
+- **`job.json` can set `pairwise_threshold`, `n_clusters`, `custom_reagents`,
+  and `predictions_dir` / `skip_colabfold`.** Environment variables remain
+  available as fallbacks for non-JSON runs. `predictions_dir` skips ColabFold
+  and runs analysis on uploaded PDBs (at least 4 models).
 - **`n_clusters` must currently be 3.** Pairwise NC merge/ranking still assumes
   `nc_rep1/2/3` and three pair comparisons.
 - **Custom reagents are additive** to the built-in SI Table S1 map in

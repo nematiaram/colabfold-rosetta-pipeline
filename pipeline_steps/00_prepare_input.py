@@ -24,6 +24,14 @@ def _validate_n_clusters(value, field="n_clusters"):
     return k
 
 
+def _truthy(value):
+    if value is True:
+        return True
+    if value is False or value is None:
+        return False
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
 def main():
     ap = argparse.ArgumentParser(description="Prepare FASTA + job metadata from a job JSON.")
     ap.add_argument("--input-json", required=True)
@@ -34,14 +42,27 @@ def main():
     with open(args.input_json, encoding="utf-8") as f:
         job = json.load(f)
 
-    for required in ("job_id", "sequence", "num_seeds", "models_per_seed"):
-        if required not in job:
-            raise ValueError(f"Job JSON is missing required field: {required}")
+    if "job_id" not in job:
+        raise ValueError("Job JSON is missing required field: job_id")
+
+    predictions_dir = str(job.get("predictions_dir") or "").strip()
+    skip_colabfold = _truthy(job.get("skip_colabfold")) or bool(predictions_dir)
+
+    if not skip_colabfold:
+        for required in ("sequence", "num_seeds", "models_per_seed"):
+            if required not in job:
+                raise ValueError("Job JSON is missing required field: %s" % required)
 
     uniprot = job["job_id"]
-    sequence = job["sequence"].strip()
-    num_seeds = int(job["num_seeds"])
-    models_per_seed = int(job["models_per_seed"])
+    sequence = str(job.get("sequence") or "").strip()
+    if not skip_colabfold and not sequence:
+        raise ValueError("sequence is empty")
+    if skip_colabfold:
+        num_seeds = int(job["num_seeds"]) if "num_seeds" in job else 0
+        models_per_seed = int(job["models_per_seed"]) if "models_per_seed" in job else 0
+    else:
+        num_seeds = int(job["num_seeds"])
+        models_per_seed = int(job["models_per_seed"])
     labels_source = job.get("labels_source", "")
     labels_dir = job.get("labels_dir", "")
 
@@ -92,6 +113,8 @@ def main():
         f.write(f"PAIRWISE_THRESHOLD={pairwise_threshold}\n")
         f.write(f"N_CLUSTERS={n_clusters}\n")
         f.write(f"CUSTOM_REAGENTS_JSON={custom_path}\n")
+        f.write(f"SKIP_COLABFOLD={'1' if skip_colabfold else '0'}\n")
+        f.write(f"PREDICTIONS_DIR={predictions_dir}\n")
 
 
 if __name__ == "__main__":
