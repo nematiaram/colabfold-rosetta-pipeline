@@ -190,7 +190,7 @@ def main():
     procs = []
     for i, (rep_id, pdb_path) in enumerate(rows, start=1):
         # Filenames stay rep_cluster1/2/3 so merge_nc is unchanged even when
-        # the ROSIE display label is "representative 1".
+        # the ROSIE display label is "Rep 1".
         base = f"{args.uniprot}_rep_cluster{i}"
         out_path = out_dir / f"{base}_neighbor_count_{args.method}.out"
         cmd = [

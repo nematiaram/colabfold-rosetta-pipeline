@@ -532,7 +532,7 @@ def main():
         rep_rows.append(sub.iloc[0])
 
     reps_df = pd.DataFrame(rep_rows).reset_index(drop=True)
-    reps_df["rep_id"] = [f"representative {i+1}" for i in range(len(reps_df))]
+    reps_df["rep_id"] = [f"Rep {i+1}" for i in range(len(reps_df))]
 
     # A cluster far from the reference can be a genuine alternative conformation
     # or simply a badly-folded model. Downstream ΔNC cannot tell the difference,
