@@ -659,7 +659,6 @@ def main():
         zorder=5,
     )
 
-    ax.set_title(args.uniprot, pad=6)
     ax.set_xlabel(r"C$\alpha$ RMSD to reference ($\mathrm{\AA}$)")
     ax.set_ylabel("Mean per-residue pLDDT")
     ax.margins(x=0.06, y=0.10)
